@@ -1,0 +1,407 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider     = "prisma-client"
+  // Inside src/ on purpose: with the client outside the compiler's rootDir,
+  // tsc widens the output tree and `node dist/main` no longer resolves.
+  output       = "../src/generated/prisma"
+  // NestJS compiles to CommonJS (tsconfig "module": "nodenext", no "type":
+  // "module" in package.json). Without this the generated client emits
+  // `import.meta.url` and will not compile.
+  moduleFormat = "cjs"
+  runtime      = "nodejs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Accounts & auth
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String  @id @default(uuid())
+  firstName     String?
+  lastName      String?
+  middleName    String?
+  username      String? @unique
+  email         String  @unique
+  emailVerified Boolean @default(false)
+
+  image         String?
+  phoneNumber   String?
+  // Collected at signup as contact data only. No SMS OTP in this phase, so this
+  // stays false until we add a verification flow.
+  phoneVerified Boolean @default(false)
+  country       String?
+
+  role Role @default(ARTIST)
+
+  onboardingCompleted Boolean @default(false)
+
+  // Terms of service. Artists upload master recordings, so we record which
+  // version of the terms they agreed to and when.
+  acceptedTermsAt DateTime?
+  termsVersion    String?
+
+  // Account moderation
+  accountStatus          AccountStatus @default(ACTIVE)
+  accountStatusReason    String?
+  accountStatusUpdatedAt DateTime?
+
+  // Soft delete. Apple requires in-app account deletion, so the delete endpoint
+  // sets these, anonymises PII, and schedules asset cleanup.
+  isDeleted Boolean   @default(false)
+  deletedAt DateTime?
+
+  googleId String? @unique
+  password String?
+  provider String  @default("local")
+
+  mustChangePassword Boolean @default(false)
+
+  resetOTP       String?
+  resetOTPExpiry DateTime?
+
+  emailVerificationOTP       String?
+  emailVerificationOTPExpiry DateTime?
+
+  lastLoginAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  admin      Admin?
+  artist     Artist?
+  ownedLabel Label?
+  sessions   Session[]
+  assets     MediaAsset[]
+
+  @@index([role])
+  @@index([accountStatus])
+}
+
+enum Role {
+  ARTIST
+  LABEL
+  ADMIN
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+}
+
+// One row per signed-in device. Replaces a single refreshToken column on User,
+// which would log a user out of their phone whenever they signed in anywhere
+// else — not acceptable for a mobile-first product.
+model Session {
+  id               String @id @default(uuid())
+  userId           String
+  // SHA-256 of the refresh token. The token itself carries this session's id,
+  // so refresh is an indexed lookup by id followed by a constant-time compare —
+  // no table scan, and a stolen database row cannot be replayed as a token.
+  refreshTokenHash String
+
+  deviceName String?
+  platform   String? // "ios" | "android" | "web"
+  appVersion String?
+  ipAddress  String?
+  userAgent  String?
+
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Admin {
+  id        String        @id @default(uuid())
+  userId    String        @unique
+  position  AdminPosition @default(ADMIN)
+  modules   Json          @default("[]")
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum AdminPosition {
+  SUPER_ADMIN
+  ADMIN
+  FINANCE
+  SUPPORT
+  MODERATOR
+  VIEWER
+}
+
+// ---------------------------------------------------------------------------
+// Roster: labels and artists
+// ---------------------------------------------------------------------------
+
+// Scaffolded now, not exposed in this phase. Costs one table and a nullable FK,
+// and saves reworking every release query when the label dashboard arrives.
+model Label {
+  id      String  @id @default(uuid())
+  ownerId String  @unique
+  name    String
+  slug    String  @unique
+  country String?
+  logoUrl String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner    User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  artists  Artist[]
+  releases Release[]
+}
+
+model Artist {
+  id String @id @default(uuid())
+
+  // Nullable because a label will eventually add roster artists who have no
+  // login of their own. In this phase every artist row has a user.
+  userId String? @unique
+
+  labelId String?
+
+  // The "artist name" collected at signup.
+  stageName String
+  slug      String  @unique
+  legalName String?
+  bio       String?
+  avatarUrl String?
+  country   String?
+
+  // Set once we can match a catalogue to a streaming profile. Unused until the
+  // analytics phase, but this is where those IDs belong.
+  spotifyArtistId    String?
+  appleMusicArtistId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label    Label?    @relation(fields: [labelId], references: [id], onDelete: SetNull)
+  releases Release[]
+
+  @@index([labelId])
+  @@index([stageName])
+}
+
+// ---------------------------------------------------------------------------
+// Catalogue: releases and tracks
+// ---------------------------------------------------------------------------
+
+// A single upload in the app creates one Release of type SINGLE holding one
+// Track. The app can hide the word "release" entirely — the structure exists so
+// EPs, albums and UPC assignment don't require a migration later.
+model Release {
+  id       String  @id @default(uuid())
+  artistId String
+  labelId  String?
+
+  title       String
+  type        ReleaseType @default(SINGLE)
+  // Assigned by the distribution partner at delivery time. Null until then.
+  upc         String?     @unique
+  releaseDate DateTime?
+  language    String?
+
+  primaryGenre   String?
+  secondaryGenre String?
+
+  // Copyright lines printed on DSP pages, e.g. "2026 FRNDSHQ".
+  cLine String?
+  pLine String?
+
+  artworkAssetId String? @unique
+
+  status      ReleaseStatus @default(DRAFT)
+  submittedAt DateTime?
+  reviewedAt  DateTime?
+  reviewNotes String?
+
+  // Captured when the artist ticks "I own or control the rights to this
+  // recording" at submission. Do not accept a submission without it.
+  rightsConfirmedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  artist       Artist      @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  label        Label?      @relation(fields: [labelId], references: [id], onDelete: SetNull)
+  artworkAsset MediaAsset? @relation("ReleaseArtwork", fields: [artworkAssetId], references: [id], onDelete: SetNull)
+  tracks       Track[]
+
+  @@index([artistId, status])
+  @@index([labelId])
+  @@index([createdAt])
+}
+
+enum ReleaseType {
+  SINGLE
+  EP
+  ALBUM
+}
+
+enum ReleaseStatus {
+  DRAFT // being filled in
+  SUBMITTED // artist has submitted, awaiting review
+  IN_REVIEW // admin or automated QC running
+  READY // passed review, stored, going no further in this phase
+  REJECTED // failed QC or moderation
+
+  // Distribution phase only. Nothing in this build ever sets these — the app
+  // must never tell an artist their music is live while they are unreachable.
+  DELIVERING
+  LIVE
+  TAKEN_DOWN
+}
+
+model Track {
+  id        String @id @default(uuid())
+  releaseId String
+
+  title        String
+  versionTitle String? // "Radio Edit", "Sped Up", etc.
+  trackNumber  Int     @default(1)
+  discNumber   Int     @default(1)
+
+  isrc     String? @unique
+  explicit Boolean @default(false)
+  lyrics   String?
+
+  audioAssetId String? @unique
+
+  // Written by the validation worker after upload. lufs and peakDb stay null
+  // until loudness analysis exists — that needs a full decode, not a probe.
+  durationSec Int?
+  sampleRate  Int?
+  bitDepth    Int?
+  channels    Int?
+  lufs        Float?
+  peakDb      Float?
+
+  status             TrackStatus @default(PENDING_UPLOAD)
+  processingError    String?
+  // Guards the retry sweep: a file that kills the probe every time must not be
+  // picked up forever.
+  processingAttempts Int         @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  release      Release            @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+  audioAsset   MediaAsset?        @relation("TrackAudio", fields: [audioAssetId], references: [id], onDelete: SetNull)
+  contributors TrackContributor[]
+
+  @@unique([releaseId, discNumber, trackNumber])
+  @@index([releaseId])
+  @@index([status])
+}
+
+enum TrackStatus {
+  PENDING_UPLOAD // row created, presigned URL issued, file not confirmed yet
+  PROCESSING // file received, validation running
+  READY // validation passed
+  FAILED // validation failed, see processingError
+}
+
+// Credits only. Deliberately no percentage field — royalty splits need a payout
+// engine behind them, and promising a split we cannot pay is worse than not
+// collecting it. Splits arrive with the payouts phase.
+model TrackContributor {
+  id      String @id @default(uuid())
+  trackId String
+
+  name     String
+  role     ContributorRole @default(OTHER)
+  roleNote String?
+
+  createdAt DateTime @default(now())
+
+  track Track @relation(fields: [trackId], references: [id], onDelete: Cascade)
+
+  @@index([trackId])
+}
+
+enum ContributorRole {
+  PRIMARY_ARTIST
+  FEATURED_ARTIST
+  PRODUCER
+  SONGWRITER
+  COMPOSER
+  MIXING_ENGINEER
+  MASTERING_ENGINEER
+  OTHER
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+// One row per object in S3. Created when a presigned URL is issued, flipped to
+// UPLOADED once the client confirms. Anything left PENDING past a day is an
+// abandoned upload and can be swept.
+model MediaAsset {
+  id      String @id @default(uuid())
+  ownerId String
+
+  kind   AssetKind
+  bucket String
+  key    String    @unique
+
+  mimeType  String?
+  sizeBytes Int?
+  checksum  String?
+
+  status AssetStatus @default(PENDING)
+
+  createdAt  DateTime  @default(now())
+  uploadedAt DateTime?
+  deletedAt  DateTime?
+
+  owner          User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  trackAudio     Track?   @relation("TrackAudio")
+  releaseArtwork Release? @relation("ReleaseArtwork")
+
+  @@index([ownerId, kind])
+  @@index([status, createdAt])
+}
+
+enum AssetKind {
+  AUDIO
+  ARTWORK
+  AVATAR
+}
+
+enum AssetStatus {
+  PENDING
+  UPLOADED
+  FAILED
+  DELETED
+}
+
+// ---------------------------------------------------------------------------
+// Later phases attach here, deliberately not modelled yet:
+//   Analytics  — TrackMetricDaily(trackId, date, platform, streams, followers,
+//                chartPosition) fed by a daily vendor pull. Add when a data
+//                vendor contract exists; there is nothing to put in it now.
+//   Delivery   — Delivery(releaseId, partner, externalId, state, deliveredAt)
+//                plus DSP targets. Shape depends on which distribution partner
+//                is signed, so modelling it now would be guesswork.
+//   Payouts    — RoyaltySplit, Wallet, Payout. Needs a payment rail (Paystack /
+//                Flutterwave) and a KYC decision first.
+// ---------------------------------------------------------------------------

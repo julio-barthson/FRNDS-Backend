@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  // Limited to src so prisma.config.ts (at the project root) stays out of the
+  // program — including it widens the inferred rootDir and emits dist/src/main.js,
+  // which breaks `node dist/main`.
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]
+}

@@ -1,0 +1,372 @@
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { StorageService } from '../media/storage.service';
+import { AudioValidationService } from '../audio/audio-validation.service';
+import { DOWNLOAD_URL_TTL_SECONDS } from '../media/media.constants';
+import type { ReleaseType } from '../generated/prisma/enums';
+import { CatalogueAccess } from './catalogue.access';
+import { CreateReleaseDto, TrackInputDto } from './dto/create-release.dto';
+import { QueryReleasesDto } from './dto/query-releases.dto';
+import { SubmitReleaseDto } from './dto/submit-release.dto';
+import { UpdateReleaseDto } from './dto/update-release.dto';
+import { releaseInclude, toReleaseDetail } from './release.mapper';
+
+const DEFAULT_PAGE_SIZE = 20;
+
+@Injectable()
+export class ReleasesService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly access: CatalogueAccess,
+    private readonly storage: StorageService,
+    private readonly audio: AudioValidationService,
+  ) {}
+
+  /**
+   * Creates the release and its tracks in one transaction. A single upload in
+   * the app is one release of type SINGLE holding one track — the app never
+   * has to show the word "release".
+   */
+  async create(userId: string, dto: CreateReleaseDto) {
+    const artist = await this.access.artistFor(userId);
+    const type = resolveType(dto.type, dto.tracks.length);
+
+    if (type === 'SINGLE' && dto.tracks.length !== 1) {
+      throw new BadRequestException('A single must have exactly one track');
+    }
+
+    if (dto.artworkAssetId) {
+      await this.access.assertAssetUsable(
+        userId,
+        dto.artworkAssetId,
+        'ARTWORK',
+      );
+    }
+
+    for (const track of dto.tracks) {
+      if (track.audioAssetId) {
+        await this.access.assertAssetUsable(
+          userId,
+          track.audioAssetId,
+          'AUDIO',
+        );
+      }
+    }
+
+    assertNoDuplicateAssets(dto.tracks);
+
+    const release = await this.prisma.release.create({
+      data: {
+        artistId: artist.id,
+        labelId: artist.labelId,
+        title: dto.title.trim(),
+        type,
+        releaseDate: dto.releaseDate ? new Date(dto.releaseDate) : null,
+        language: dto.language,
+        primaryGenre: dto.primaryGenre,
+        secondaryGenre: dto.secondaryGenre,
+        cLine: dto.cLine,
+        pLine: dto.pLine,
+        artworkAssetId: dto.artworkAssetId,
+        status: 'DRAFT',
+        tracks: {
+          create: dto.tracks.map((track, index) => ({
+            title: track.title.trim(),
+            versionTitle: track.versionTitle,
+            trackNumber: index + 1,
+            explicit: track.explicit ?? false,
+            lyrics: track.lyrics,
+            audioAssetId: track.audioAssetId,
+            status: track.audioAssetId ? 'PROCESSING' : 'PENDING_UPLOAD',
+            ...(track.contributors?.length && {
+              contributors: { create: track.contributors },
+            }),
+          })),
+        },
+      },
+      include: releaseInclude,
+    });
+
+    // Probing happens in the background; the artist gets the draft back now
+    // and the track flips to READY or FAILED within seconds.
+    for (const track of release.tracks) {
+      if (track.audioAssetId) this.audio.enqueue(track.id);
+    }
+
+    return toReleaseDetail(release, this.storage);
+  }
+
+  /** The dashboard list. */
+  async list(userId: string, query: QueryReleasesDto) {
+    const artist = await this.access.artistFor(userId);
+    const page = query.page ?? 1;
+    const limit = query.limit ?? DEFAULT_PAGE_SIZE;
+
+    const where = {
+      artistId: artist.id,
+      ...(query.status && { status: query.status }),
+      ...(query.search && {
+        OR: [
+          { title: { contains: query.search, mode: 'insensitive' as const } },
+          {
+            tracks: {
+              some: {
+                title: {
+                  contains: query.search,
+                  mode: 'insensitive' as const,
+                },
+              },
+            },
+          },
+        ],
+      }),
+    };
+
+    const [total, releases] = await Promise.all([
+      this.prisma.release.count({ where }),
+      this.prisma.release.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          title: true,
+          type: true,
+          status: true,
+          releaseDate: true,
+          submittedAt: true,
+          createdAt: true,
+          artworkAsset: { select: { key: true, status: true } },
+          tracks: {
+            orderBy: { trackNumber: 'asc' },
+            select: {
+              id: true,
+              title: true,
+              status: true,
+              durationSec: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const items = await Promise.all(
+      releases.map(async (release) => ({
+        id: release.id,
+        title: release.title,
+        type: release.type,
+        status: release.status,
+        releaseDate: release.releaseDate,
+        submittedAt: release.submittedAt,
+        createdAt: release.createdAt,
+        trackCount: release.tracks.length,
+        // Handy for a single, where the app shows one row per track.
+        tracks: release.tracks,
+        artworkUrl:
+          release.artworkAsset?.status === 'UPLOADED' &&
+          this.storage.isConfigured
+            ? await this.storage.presignGet(
+                release.artworkAsset.key,
+                DOWNLOAD_URL_TTL_SECONDS,
+              )
+            : null,
+      })),
+    );
+
+    return {
+      items,
+      page,
+      limit,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    };
+  }
+
+  async findOne(userId: string, releaseId: string) {
+    const release = await this.findOwned(userId, releaseId);
+    return toReleaseDetail(release, this.storage);
+  }
+
+  async update(userId: string, releaseId: string, dto: UpdateReleaseDto) {
+    const existing = await this.findOwned(userId, releaseId);
+    this.access.assertEditable(existing.status);
+
+    if (dto.artworkAssetId) {
+      await this.access.assertAssetUsable(
+        userId,
+        dto.artworkAssetId,
+        'ARTWORK',
+        {
+          releaseId,
+        },
+      );
+    }
+
+    if (dto.type && dto.type === 'SINGLE' && existing.tracks.length !== 1) {
+      throw new BadRequestException(
+        `A single must have exactly one track — this release has ${existing.tracks.length}`,
+      );
+    }
+
+    const release = await this.prisma.release.update({
+      where: { id: releaseId },
+      data: {
+        ...(dto.title !== undefined && { title: dto.title.trim() }),
+        ...(dto.type !== undefined && { type: dto.type }),
+        ...(dto.releaseDate !== undefined && {
+          releaseDate: dto.releaseDate ? new Date(dto.releaseDate) : null,
+        }),
+        ...(dto.language !== undefined && { language: dto.language }),
+        ...(dto.primaryGenre !== undefined && {
+          primaryGenre: dto.primaryGenre,
+        }),
+        ...(dto.secondaryGenre !== undefined && {
+          secondaryGenre: dto.secondaryGenre,
+        }),
+        ...(dto.cLine !== undefined && { cLine: dto.cLine }),
+        ...(dto.pLine !== undefined && { pLine: dto.pLine }),
+        ...(dto.artworkAssetId !== undefined && {
+          artworkAssetId: dto.artworkAssetId,
+        }),
+        // Editing a rejected release puts it back in the artist's hands.
+        ...(existing.status === 'REJECTED' && {
+          status: 'DRAFT' as const,
+          reviewNotes: null,
+        }),
+      },
+      include: releaseInclude,
+    });
+
+    return toReleaseDetail(release, this.storage);
+  }
+
+  /**
+   * Deletes a draft and its tracks. The uploaded files are left alone and the
+   * daily media sweep collects them once nothing points at them — deleting
+   * objects inline would strand the row if storage were briefly unreachable.
+   */
+  async remove(userId: string, releaseId: string) {
+    const existing = await this.findOwned(userId, releaseId);
+    this.access.assertEditable(existing.status);
+
+    await this.prisma.release.delete({ where: { id: releaseId } });
+
+    return { message: 'Release deleted' };
+  }
+
+  /**
+   * Hands the release over for review. Nothing reaches a DSP in this phase, so
+   * SUBMITTED means "with FRNDSHQ", never "live".
+   */
+  async submit(userId: string, releaseId: string, dto: SubmitReleaseDto) {
+    // The DTO already rejects anything but true. Checked again here so the
+    // rights claim cannot be skipped by calling this service from elsewhere.
+    if (!dto.confirmRights) {
+      throw new BadRequestException(
+        'You must confirm you own or control the rights to this recording',
+      );
+    }
+
+    const existing = await this.findOwned(userId, releaseId);
+    this.access.assertEditable(existing.status);
+
+    const problems = collectSubmissionProblems(existing);
+    if (problems.length) {
+      throw new BadRequestException(problems);
+    }
+
+    const now = new Date();
+    const release = await this.prisma.release.update({
+      where: { id: releaseId },
+      data: {
+        status: 'SUBMITTED',
+        submittedAt: now,
+        // dto.confirmRights is validated as true, so reaching here is the
+        // artist's rights claim; the timestamp is the record of it.
+        rightsConfirmedAt: now,
+        reviewNotes: null,
+      },
+      include: releaseInclude,
+    });
+
+    return toReleaseDetail(release, this.storage);
+  }
+
+  /** Scoped to the caller's artist, so someone else's id reads as missing. */
+  private async findOwned(userId: string, releaseId: string) {
+    const artist = await this.access.artistFor(userId);
+
+    const release = await this.prisma.release.findFirst({
+      where: { id: releaseId, artistId: artist.id },
+      include: releaseInclude,
+    });
+
+    if (!release) throw new NotFoundException('Release not found');
+    return release;
+  }
+}
+
+/** 1 track is a single, 2–6 an EP, more an album. */
+function resolveType(
+  requested: ReleaseType | undefined,
+  trackCount: number,
+): ReleaseType {
+  if (requested) return requested;
+  if (trackCount === 1) return 'SINGLE';
+  return trackCount <= 6 ? 'EP' : 'ALBUM';
+}
+
+function assertNoDuplicateAssets(tracks: TrackInputDto[]) {
+  const ids = tracks
+    .map((track) => track.audioAssetId)
+    .filter((id): id is string => Boolean(id));
+
+  if (new Set(ids).size !== ids.length) {
+    throw new BadRequestException(
+      'The same audio file cannot be used for two tracks',
+    );
+  }
+}
+
+/**
+ * Everything wrong with the release, in one response. Returning them one at a
+ * time turns submission into a guessing game on a phone.
+ */
+function collectSubmissionProblems(release: {
+  artworkAssetId: string | null;
+  primaryGenre: string | null;
+  tracks: { title: string; audioAssetId: string | null; status: string }[];
+}): string[] {
+  const problems: string[] = [];
+
+  if (!release.artworkAssetId) {
+    problems.push('Cover artwork is required');
+  }
+
+  if (!release.primaryGenre) {
+    problems.push('A primary genre is required');
+  }
+
+  if (release.tracks.length === 0) {
+    problems.push('At least one track is required');
+  }
+
+  for (const track of release.tracks) {
+    if (!track.audioAssetId) {
+      problems.push(`"${track.title}" has no audio file`);
+    } else if (track.status === 'FAILED') {
+      problems.push(
+        `"${track.title}" failed audio checks and must be replaced`,
+      );
+    } else if (track.status !== 'READY') {
+      problems.push(`"${track.title}" is still processing`);
+    }
+  }
+
+  return problems;
+}
