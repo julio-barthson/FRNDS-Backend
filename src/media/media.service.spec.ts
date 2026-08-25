@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { PrismaService } from '../prisma/prisma.service';
+import { DEFAULT_MAX_AUDIO_UPLOADS_PER_ARTIST } from './media.constants';
 import { MediaService } from './media.service';
 import { StorageService } from './storage.service';
 
@@ -107,7 +108,12 @@ describe('MediaService', () => {
     });
 
     it('enforces the per-account audio quota', async () => {
-      prisma.mediaAsset.count.mockResolvedValue(10);
+      // Read from the constant rather than repeated as a literal. The limit is
+      // a tuning knob — it has already moved from 10 to 100 — and a test that
+      // hardcodes the old value fails for a change that is not a regression.
+      prisma.mediaAsset.count.mockResolvedValue(
+        DEFAULT_MAX_AUDIO_UPLOADS_PER_ARTIST,
+      );
 
       await expect(
         service.createUploadUrl(USER, {

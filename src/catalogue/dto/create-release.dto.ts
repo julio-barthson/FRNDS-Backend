@@ -6,10 +6,13 @@ import {
   IsBoolean,
   IsDateString,
   IsEnum,
+  IsInt,
   IsOptional,
   IsString,
   IsUUID,
+  Max,
   MaxLength,
+  Min,
   MinLength,
   ValidateNested,
 } from 'class-validator';
@@ -30,6 +33,16 @@ export class ContributorInputDto {
   @IsString()
   @MaxLength(100)
   roleNote?: string;
+
+  /**
+   * Billing order within the list, ascending. Omitted means the array's own
+   * order is used, which is what the app sends.
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(99)
+  position?: number;
 }
 
 export class TrackInputDto {
@@ -118,6 +131,21 @@ export class CreateReleaseDto {
   @IsOptional()
   @IsUUID()
   artworkAssetId?: string;
+
+  /**
+   * Who the release is billed to — the names shown on the album, in order.
+   *
+   * Left out on create, the owning artist becomes the sole primary artist,
+   * which is the right answer for the great majority of uploads. Sending it
+   * replaces that default entirely, so a joint album or a label upload can name
+   * whoever it is actually by.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => ContributorInputDto)
+  contributors?: ContributorInputDto[];
 
   @IsArray()
   @ArrayMinSize(1)

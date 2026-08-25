@@ -2,7 +2,7 @@
 // templating dependency buys nothing for four transactional messages.
 
 const BRAND = 'FRNDSHQ';
-const ACCENT = '#1d4ed8';
+const ACCENT = '#0A84FF';
 
 function layout(heading: string, body: string): string {
   const supportEmail = process.env.SUPPORT_EMAIL_ADDRESS ?? '';

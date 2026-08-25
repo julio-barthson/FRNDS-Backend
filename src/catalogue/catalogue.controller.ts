@@ -15,6 +15,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../decorators/current-user.decorator';
 import { CreateReleaseDto, TrackInputDto } from './dto/create-release.dto';
 import { QueryReleasesDto } from './dto/query-releases.dto';
+import { ReorderTracksDto } from './dto/reorder-tracks.dto';
 import { SubmitReleaseDto } from './dto/submit-release.dto';
 import { UpdateReleaseDto } from './dto/update-release.dto';
 import { UpdateTrackDto } from './dto/update-track.dto';
@@ -109,6 +110,23 @@ export class CatalogueController {
     @Body() dto: TrackInputDto,
   ) {
     return this.tracks.addTrack(userId, id, dto);
+  }
+
+  // Declared above `:id/tracks/:trackId` so `order` is read as this route and
+  // not as a track id — `ParseUUIDPipe` would otherwise reject it as malformed
+  // rather than falling through.
+  @ApiOperation({
+    summary: 'Set the running order',
+    description:
+      'Takes every track id on the release, in order. Renumbers `trackNumber` from 1 and returns the release.',
+  })
+  @Patch(':id/tracks/order')
+  reorderTracks(
+    @CurrentUser('sub') userId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReorderTracksDto,
+  ) {
+    return this.tracks.reorderTracks(userId, id, dto);
   }
 
   @ApiOperation({

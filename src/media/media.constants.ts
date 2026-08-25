@@ -62,7 +62,7 @@ export const DOWNLOAD_URL_TTL_SECONDS = 5 * 60;
  * distributed yet, so every upload is cost without revenue behind it.
  * Override with MAX_AUDIO_UPLOADS_PER_ARTIST.
  */
-export const DEFAULT_MAX_AUDIO_UPLOADS_PER_ARTIST = 10;
+export const DEFAULT_MAX_AUDIO_UPLOADS_PER_ARTIST = 100;
 
 /** Unconfirmed uploads older than this are swept. */
 export const PENDING_ASSET_TTL_HOURS = 24;

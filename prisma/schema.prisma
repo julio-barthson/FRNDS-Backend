@@ -64,6 +64,13 @@ model User {
 
   mustChangePassword Boolean @default(false)
 
+  /**
+   * Whether transactional mail about their own catalogue reaches them. The
+   * in-app centre is not optional — it is a record, and turning it off would
+   * mean an artist could never find out why a release came back.
+   */
+  emailNotifications Boolean @default(true)
+
   resetOTP       String?
   resetOTPExpiry DateTime?
 
@@ -80,6 +87,12 @@ model User {
   ownedLabel Label?
   sessions   Session[]
   assets     MediaAsset[]
+
+  // Written only when this user is an administrator. Kept on User rather than
+  // Admin so a decision survives the Admin row being changed underneath it.
+  adminActions     AdminAction[]  @relation("AdminActor")
+  reviewedReleases Release[]      @relation("ReleaseReviewer")
+  notifications    Notification[]
 
   @@index([role])
   @@index([accountStatus])
@@ -129,7 +142,6 @@ model Admin {
   id        String        @id @default(uuid())
   userId    String        @unique
   position  AdminPosition @default(ADMIN)
-  modules   Json          @default("[]")
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
 
@@ -228,10 +240,14 @@ model Release {
 
   artworkAssetId String? @unique
 
-  status      ReleaseStatus @default(DRAFT)
-  submittedAt DateTime?
-  reviewedAt  DateTime?
-  reviewNotes String?
+  status       ReleaseStatus @default(DRAFT)
+  submittedAt  DateTime?
+  reviewedAt   DateTime?
+  reviewNotes  String?
+  // The administrator behind the current status. Denormalised out of the
+  // action log on purpose: "who approved this" is asked every time the release
+  // is opened, and it should not need a second query to answer.
+  reviewedById String?
 
   // Captured when the artist ticks "I own or control the rights to this
   // recording" at submission. Do not accept a submission without it.
@@ -240,10 +256,13 @@ model Release {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  artist       Artist      @relation(fields: [artistId], references: [id], onDelete: Cascade)
-  label        Label?      @relation(fields: [labelId], references: [id], onDelete: SetNull)
-  artworkAsset MediaAsset? @relation("ReleaseArtwork", fields: [artworkAssetId], references: [id], onDelete: SetNull)
-  tracks       Track[]
+  artist        Artist               @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  label         Label?               @relation(fields: [labelId], references: [id], onDelete: SetNull)
+  reviewedBy    User?                @relation("ReleaseReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  artworkAsset  MediaAsset?          @relation("ReleaseArtwork", fields: [artworkAssetId], references: [id], onDelete: SetNull)
+  tracks        Track[]
+  contributors  ReleaseContributor[]
+  notifications Notification[]
 
   @@index([artistId, status])
   @@index([labelId])
@@ -330,6 +349,12 @@ model TrackContributor {
   role     ContributorRole @default(OTHER)
   roleNote String?
 
+  // Billing order. "Asake & Olamide" is not "Olamide & Asake", and rows were
+  // previously read back in insertion order, which is an accident rather than
+  // a decision. Scoped per track, not per role: primaries and features are
+  // composed into one credit line and their relative order matters.
+  position Int @default(0)
+
   createdAt DateTime @default(now())
 
   track Track @relation(fields: [trackId], references: [id], onDelete: Cascade)
@@ -337,9 +362,43 @@ model TrackContributor {
   @@index([trackId])
 }
 
+// The billing on the release itself — who the album is *by*.
+//
+// Deliberately not `Release.artistId`. That column is ownership: whose account
+// this belongs to, what every catalogue query scopes through, and what has to
+// keep working unchanged. Ownership and billing are the same person on most
+// releases and different people on plenty of others — a label upload, a joint
+// album, a compilation — so conflating them costs the ability to express any of
+// those. The owner is seeded here as the first primary artist and can then be
+// reordered or removed like any other row.
+model ReleaseContributor {
+  id        String @id @default(uuid())
+  releaseId String
+
+  name     String
+  role     ContributorRole @default(OTHER)
+  roleNote String?
+  position Int             @default(0)
+
+  createdAt DateTime @default(now())
+
+  release Release @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+
+  @@index([releaseId])
+}
+
 enum ContributorRole {
+  // The three that decide billing and the delivered title string. A primary
+  // artist gets the release on their own artist page; a featured artist gets
+  // the "(feat. …)" credit and a link, not a discography entry. A remixer is
+  // credited alongside a `versionTitle` of "<name> Remix" and is only a primary
+  // artist if the deal says so.
   PRIMARY_ARTIST
   FEATURED_ARTIST
+  REMIXER
+
+  // Credits. Stored and delivered, but not part of the artist billing, and
+  // Phase 1 collects none of them through the app.
   PRODUCER
   SONGWRITER
   COMPOSER
@@ -405,3 +464,116 @@ enum AssetStatus {
 //   Payouts    — RoyaltySplit, Wallet, Payout. Needs a payment rail (Paystack /
 //                Flutterwave) and a KYC decision first.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+/**
+ * What an administrator did, and to whom.
+ * Append-only: nothing updates or deletes a row here. The point of the table is
+ * to answer "who decided this, and when" months later — a log that can be
+ * edited answers nothing. It exists because console decisions are contestable:
+ * an artist whose release was refused, or an account that was locked out, is
+ * owed a name and a date rather than a line in a server's stdout.
+ */
+model AdminAction {
+  id          String @id @default(uuid())
+  adminUserId String
+
+  action     AdminActionType
+  targetType AdminTargetType
+  targetId   String
+
+  /**
+   * The substance of the decision in the reviewer's own words — the rejection
+   * note, the suspension reason, the position that was granted. Copied rather
+   * than referenced, so editing the release later cannot rewrite what the
+   * decision said at the time.
+   */
+  detail String?
+
+  createdAt DateTime @default(now())
+
+  admin User @relation("AdminActor", fields: [adminUserId], references: [id], onDelete: Cascade)
+
+  // The two questions asked of this table: everything that happened to one
+  // thing, and everything one administrator has done.
+  @@index([targetType, targetId, createdAt])
+  @@index([adminUserId, createdAt])
+}
+
+enum AdminActionType {
+  RELEASE_CLAIMED
+  RELEASE_APPROVED
+  RELEASE_REJECTED
+  ACCOUNT_SUSPENDED
+  ACCOUNT_REINSTATED
+  ADMIN_CREATED
+  ADMIN_POSITION_CHANGED
+  ADMIN_PASSWORD_RESET
+  ADMIN_SUSPENDED
+  ADMIN_REINSTATED
+}
+
+enum AdminTargetType {
+  RELEASE
+  ACCOUNT
+  ADMIN
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+/**
+ * One thing that happened, addressed to one person.
+ * The row is the record. Email is a copy of it that may or may not arrive —
+ * the sender domain does not resolve yet, and an artist who never opens their
+ * inbox still has to be able to find out why a release came back. So the centre
+ * is written first and mail is best-effort on top.
+ * `title` and `body` are stored rather than derived at read time. A rejection
+ * quotes the reviewer's note, and re-deriving it later would let an edit to the
+ * release rewrite what the artist was told.
+ */
+model Notification {
+  id     String           @id @default(uuid())
+  userId String
+  type   NotificationType
+
+  title String
+  body  String
+
+  /**
+   * What tapping it opens. Null for anything not about one release.
+   */
+  releaseId String?
+
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Cascade rather than SetNull: a notification about a release that no longer
+  // exists is a dead end, not history worth keeping.
+  release Release? @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+
+  // The two reads: the newest page for one person, and their unread count.
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+}
+
+enum NotificationType {
+  /**
+   * To the artist, confirming we have it.
+   */
+  RELEASE_SUBMITTED
+  /**
+   * To the artist, after a reviewer decides.
+   */
+  RELEASE_APPROVED
+  RELEASE_REJECTED
+  /**
+   * To every administrator, when something lands in the queue.
+   */
+  REVIEW_QUEUE_NEW
+}

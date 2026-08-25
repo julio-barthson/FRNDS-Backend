@@ -38,6 +38,8 @@ export class UserResponseDto {
   accountStatus: AccountStatus;
   onboardingCompleted: boolean;
   mustChangePassword: boolean;
+  /** Whether transactional mail reaches them. In-app is not optional. */
+  emailNotifications: boolean;
   acceptedTermsAt: Date | null;
   termsVersion: string | null;
   createdAt: Date;
@@ -62,6 +64,7 @@ export const userResponseSelect = {
   accountStatus: true,
   onboardingCompleted: true,
   mustChangePassword: true,
+  emailNotifications: true,
   acceptedTermsAt: true,
   termsVersion: true,
   createdAt: true,
@@ -113,6 +116,7 @@ export function toUserResponse(user: SelectedUser): UserResponseDto {
     accountStatus: user.accountStatus,
     onboardingCompleted: user.onboardingCompleted,
     mustChangePassword: user.mustChangePassword,
+    emailNotifications: user.emailNotifications,
     acceptedTermsAt: user.acceptedTermsAt ?? null,
     termsVersion: user.termsVersion ?? null,
     createdAt: user.createdAt,

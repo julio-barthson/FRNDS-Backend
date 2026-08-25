@@ -6,8 +6,14 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../media/storage.service';
 import { AudioValidationService } from '../audio/audio-validation.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { DOWNLOAD_URL_TTL_SECONDS } from '../media/media.constants';
 import type { ReleaseType } from '../generated/prisma/enums';
+import {
+  assertNoTypedFeature,
+  displayArtist,
+  normaliseContributors,
+} from './billing';
 import { CatalogueAccess } from './catalogue.access';
 import { CreateReleaseDto, TrackInputDto } from './dto/create-release.dto';
 import { QueryReleasesDto } from './dto/query-releases.dto';
@@ -24,6 +30,7 @@ export class ReleasesService {
     private readonly access: CatalogueAccess,
     private readonly storage: StorageService,
     private readonly audio: AudioValidationService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /**
@@ -59,6 +66,20 @@ export class ReleasesService {
 
     assertNoDuplicateAssets(dto.tracks);
 
+    // Caught here rather than at submission: the artist is still looking at the
+    // field they typed it into, which is the only point the fix is cheap.
+    assertNoTypedFeature(dto.title, 'release title');
+    for (const track of dto.tracks) {
+      assertNoTypedFeature(track.title, `title of "${track.title}"`);
+    }
+
+    // Billing defaults to the account doing the uploading, which is right for
+    // almost every release and leaves the artist nothing to fill in. Sending a
+    // list replaces it outright.
+    const contributors = dto.contributors?.length
+      ? normaliseContributors(dto.contributors)
+      : [{ name: artist.stageName, role: 'PRIMARY_ARTIST' as const, position: 0 }];
+
     const release = await this.prisma.release.create({
       data: {
         artistId: artist.id,
@@ -73,6 +94,7 @@ export class ReleasesService {
         pLine: dto.pLine,
         artworkAssetId: dto.artworkAssetId,
         status: 'DRAFT',
+        contributors: { create: contributors },
         tracks: {
           create: dto.tracks.map((track, index) => ({
             title: track.title.trim(),
@@ -83,7 +105,9 @@ export class ReleasesService {
             audioAssetId: track.audioAssetId,
             status: track.audioAssetId ? 'PROCESSING' : 'PENDING_UPLOAD',
             ...(track.contributors?.length && {
-              contributors: { create: track.contributors },
+              contributors: {
+                create: normaliseContributors(track.contributors),
+              },
             }),
           })),
         },
@@ -142,6 +166,13 @@ export class ReleasesService {
           submittedAt: true,
           createdAt: true,
           artworkAsset: { select: { key: true, status: true } },
+          // Only the primaries: the list shows who a release is by, and a
+          // feature belongs to a track, not to the row in a catalogue.
+          contributors: {
+            where: { role: 'PRIMARY_ARTIST' },
+            orderBy: { position: 'asc' },
+            select: { name: true, role: true, position: true },
+          },
           tracks: {
             orderBy: { trackNumber: 'asc' },
             select: {
@@ -165,6 +196,7 @@ export class ReleasesService {
         submittedAt: release.submittedAt,
         createdAt: release.createdAt,
         trackCount: release.tracks.length,
+        displayArtist: displayArtist(release.contributors),
         // Handy for a single, where the app shows one row per track.
         tracks: release.tracks,
         artworkUrl:
@@ -213,6 +245,10 @@ export class ReleasesService {
       );
     }
 
+    if (dto.title !== undefined) {
+      assertNoTypedFeature(dto.title, 'release title');
+    }
+
     const release = await this.prisma.release.update({
       where: { id: releaseId },
       data: {
@@ -232,6 +268,18 @@ export class ReleasesService {
         ...(dto.pLine !== undefined && { pLine: dto.pLine }),
         ...(dto.artworkAssetId !== undefined && {
           artworkAssetId: dto.artworkAssetId,
+        }),
+        // Replaced wholesale, like track contributors: the app sends the list
+        // it is showing, which needs no diffing from a phone. An empty array
+        // is a real instruction — it clears the billing — so the check is on
+        // `undefined`, not on length.
+        ...(dto.contributors !== undefined && {
+          contributors: {
+            deleteMany: {},
+            ...(dto.contributors.length && {
+              create: normaliseContributors(dto.contributors),
+            }),
+          },
         }),
         // Editing a rejected release puts it back in the artist's hands.
         ...(existing.status === 'REJECTED' && {
@@ -294,7 +342,27 @@ export class ReleasesService {
       include: releaseInclude,
     });
 
-    return toReleaseDetail(release, this.storage);
+    const detail = await toReleaseDetail(release, this.storage);
+
+    // Both sides of the hand-off, in one place. Awaited rather than fired and
+    // forgotten so a failure is logged against this request — `notify` swallows
+    // its own errors, so this cannot fail the submission.
+    await this.notifications.notify({
+      userId,
+      type: 'RELEASE_SUBMITTED',
+      title: 'Release submitted',
+      body: `“${release.title}” is with our review team. We will let you know as soon as there is a decision.`,
+      releaseId: release.id,
+    });
+
+    await this.notifications.notifyAdmins({
+      type: 'REVIEW_QUEUE_NEW',
+      title: 'New release to review',
+      body: `${detail.displayArtist || 'An artist'} submitted “${release.title}”.`,
+      releaseId: release.id,
+    });
+
+    return detail;
   }
 
   /** Scoped to the caller's artist, so someone else's id reads as missing. */
@@ -340,6 +408,7 @@ function assertNoDuplicateAssets(tracks: TrackInputDto[]) {
 function collectSubmissionProblems(release: {
   artworkAssetId: string | null;
   primaryGenre: string | null;
+  contributors: { role: string }[];
   tracks: { title: string; audioAssetId: string | null; status: string }[];
 }): string[] {
   const problems: string[] = [];
@@ -350,6 +419,12 @@ function collectSubmissionProblems(release: {
 
   if (!release.primaryGenre) {
     problems.push('A primary genre is required');
+  }
+
+  // A release with only featured artists on it has nobody to bill it to, and
+  // no artist page for it to appear on. Stores reject it outright.
+  if (!release.contributors.some((row) => row.role === 'PRIMARY_ARTIST')) {
+    problems.push('At least one primary artist is required');
   }
 
   if (release.tracks.length === 0) {

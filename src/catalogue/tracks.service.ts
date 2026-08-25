@@ -6,8 +6,10 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../media/storage.service';
 import { AudioValidationService } from '../audio/audio-validation.service';
+import { assertNoTypedFeature, normaliseContributors } from './billing';
 import { CatalogueAccess } from './catalogue.access';
 import { TrackInputDto } from './dto/create-release.dto';
+import { ReorderTracksDto } from './dto/reorder-tracks.dto';
 import { UpdateTrackDto } from './dto/update-track.dto';
 import { releaseInclude, toReleaseDetail } from './release.mapper';
 
@@ -29,6 +31,8 @@ export class TracksService {
       );
     }
 
+    assertNoTypedFeature(dto.title, 'track title');
+
     if (dto.audioAssetId) {
       await this.access.assertAssetUsable(userId, dto.audioAssetId, 'AUDIO');
     }
@@ -47,7 +51,7 @@ export class TracksService {
         audioAssetId: dto.audioAssetId,
         status: dto.audioAssetId ? 'PROCESSING' : 'PENDING_UPLOAD',
         ...(dto.contributors?.length && {
-          contributors: { create: dto.contributors },
+          contributors: { create: normaliseContributors(dto.contributors) },
         }),
       },
       select: { id: true },
@@ -72,6 +76,8 @@ export class TracksService {
     const track = release.tracks.find((candidate) => candidate.id === trackId);
 
     if (!track) throw new NotFoundException('Track not found');
+
+    if (dto.title !== undefined) assertNoTypedFeature(dto.title, 'track title');
 
     if (dto.audioAssetId) {
       await this.access.assertAssetUsable(userId, dto.audioAssetId, 'AUDIO', {
@@ -109,7 +115,9 @@ export class TracksService {
         ...(dto.contributors !== undefined && {
           contributors: {
             deleteMany: {},
-            ...(dto.contributors.length && { create: dto.contributors }),
+            ...(dto.contributors.length && {
+              create: normaliseContributors(dto.contributors),
+            }),
           },
         }),
       },
@@ -143,6 +151,57 @@ export class TracksService {
       ...remaining.map((candidate, index) =>
         this.prisma.track.update({
           where: { id: candidate.id },
+          data: { trackNumber: index + 1 },
+        }),
+      ),
+    ]);
+
+    return this.reload(releaseId);
+  }
+
+  /**
+   * Sets the running order from a list of ids.
+   *
+   * Written in two passes over one transaction. `@@unique([releaseId,
+   * discNumber, trackNumber])` is checked per statement, so assigning the final
+   * numbers directly collides the moment two tracks swap — the first update
+   * would claim a number the second still holds. The first pass parks every
+   * track on the negative of its new position, which no real row ever uses, and
+   * the second brings them up to the positive number now that it is free.
+   */
+  async reorderTracks(
+    userId: string,
+    releaseId: string,
+    dto: ReorderTracksDto,
+  ) {
+    const release = await this.findEditableRelease(userId, releaseId);
+
+    const existing = new Set(release.tracks.map((track) => track.id));
+    const requested = new Set(dto.trackIds);
+
+    // A permutation of exactly what is on the release, or nothing. Anything
+    // less would leave tracks holding stale numbers and silently reorder a
+    // release differently from what the artist saw.
+    if (
+      requested.size !== dto.trackIds.length ||
+      requested.size !== existing.size ||
+      dto.trackIds.some((id) => !existing.has(id))
+    ) {
+      throw new BadRequestException(
+        'Send every track on this release exactly once, in the order they should play.',
+      );
+    }
+
+    await this.prisma.$transaction([
+      ...dto.trackIds.map((id, index) =>
+        this.prisma.track.update({
+          where: { id },
+          data: { trackNumber: -(index + 1) },
+        }),
+      ),
+      ...dto.trackIds.map((id, index) =>
+        this.prisma.track.update({
+          where: { id },
           data: { trackNumber: index + 1 },
         }),
       ),

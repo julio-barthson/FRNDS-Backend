@@ -7,7 +7,7 @@ import { CatalogueAccess } from './catalogue.access';
 import { ReleasesService } from './releases.service';
 
 const USER = 'user-1';
-const ARTIST = { id: 'artist-1', labelId: null };
+const ARTIST = { id: 'artist-1', labelId: null, stageName: 'Test Artist' };
 
 const completeRelease = {
   id: 'release-1',
@@ -17,6 +17,9 @@ const completeRelease = {
   artworkAssetId: 'artwork-1',
   primaryGenre: 'Afrobeats',
   artworkAsset: { id: 'artwork-1', key: 'artwork/k', status: 'UPLOADED' },
+  contributors: [
+    { id: 'rc-1', name: 'Test Artist', role: 'PRIMARY_ARTIST', position: 0 },
+  ],
   tracks: [
     {
       id: 'track-1',
@@ -165,6 +168,141 @@ describe('ReleasesService', () => {
     });
   });
 
+  describe('billing', () => {
+    it('refuses a feature typed into the title', async () => {
+      await expect(
+        service.create(USER, {
+          title: 'My Song (feat. Wizkid)',
+          tracks: [{ title: 'My Song' }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(prisma.release.create).not.toHaveBeenCalled();
+    });
+
+    it('leaves a title that merely contains the letters alone', async () => {
+      prisma.release.create.mockResolvedValue(completeRelease);
+
+      await service.create(USER, {
+        title: 'Feature Presentation',
+        tracks: [{ title: 'Defeat' }],
+      });
+
+      expect(prisma.release.create).toHaveBeenCalled();
+    });
+
+    it('bills a new release to the uploading artist', async () => {
+      prisma.release.create.mockResolvedValue(completeRelease);
+
+      await service.create(USER, {
+        title: 'Test Single',
+        tracks: [{ title: 'Test Track' }],
+      });
+
+      const call = prisma.release.create.mock.calls[0][0] as {
+        data: { contributors: { create: { name: string; role: string }[] } };
+      };
+      expect(call.data.contributors.create).toEqual([
+        { name: 'Test Artist', role: 'PRIMARY_ARTIST', position: 0 },
+      ]);
+    });
+
+    it('renumbers a submitted list from its own order', async () => {
+      prisma.release.create.mockResolvedValue(completeRelease);
+
+      await service.create(USER, {
+        title: 'Joint Album',
+        contributors: [
+          { name: 'Asake', role: 'PRIMARY_ARTIST' },
+          { name: '  ', role: 'PRIMARY_ARTIST' },
+          { name: 'Olamide', role: 'PRIMARY_ARTIST' },
+        ],
+        tracks: [{ title: 'One' }],
+      });
+
+      const call = prisma.release.create.mock.calls[0][0] as {
+        data: {
+          contributors: { create: { name: string; position: number }[] };
+        };
+      };
+      // The blank row is dropped, and the gap it would have left is closed.
+      expect(call.data.contributors.create).toEqual([
+        { name: 'Asake', role: 'PRIMARY_ARTIST', roleNote: undefined, position: 0 },
+        { name: 'Olamide', role: 'PRIMARY_ARTIST', roleNote: undefined, position: 1 },
+      ]);
+    });
+  });
+
+  describe('display strings', () => {
+    it("inherits the whole of a release's billing onto a track with none", async () => {
+      prisma.release.findFirst.mockResolvedValue({
+        ...completeRelease,
+        title: 'Sungba',
+        contributors: [
+          { id: 'rc-1', name: 'Asake', role: 'PRIMARY_ARTIST', position: 0 },
+          { id: 'rc-2', name: 'Burna Boy', role: 'FEATURED_ARTIST', position: 1 },
+        ],
+        tracks: [
+          { ...completeRelease.tracks[0], title: 'Sungba', contributors: [] },
+        ],
+      });
+
+      const detail = await service.findOne(USER, 'release-1');
+
+      // The header and the track row underneath it have to agree — on a single
+      // they are the same recording.
+      expect(detail.displayTitle).toBe('Sungba (feat. Burna Boy)');
+      expect(detail.tracks[0].displayTitle).toBe('Sungba (feat. Burna Boy)');
+      expect(detail.tracks[0].displayArtist).toBe('Asake');
+    });
+
+    it('lets a track with its own billing override the release', async () => {
+      prisma.release.findFirst.mockResolvedValue({
+        ...completeRelease,
+        contributors: [
+          { id: 'rc-1', name: 'Asake', role: 'PRIMARY_ARTIST', position: 0 },
+        ],
+        tracks: [
+          {
+            ...completeRelease.tracks[0],
+            title: 'Track Two',
+            contributors: [
+              { id: 'tc-1', name: 'Olamide', role: 'PRIMARY_ARTIST', position: 0 },
+              { id: 'tc-2', name: 'Fireboy', role: 'FEATURED_ARTIST', position: 1 },
+            ],
+          },
+        ],
+      });
+
+      const detail = await service.findOne(USER, 'release-1');
+
+      expect(detail.tracks[0].displayTitle).toBe('Track Two (feat. Fireboy)');
+      expect(detail.tracks[0].displayArtist).toBe('Olamide');
+    });
+
+    it('puts a version before the feature, in its own brackets', async () => {
+      prisma.release.findFirst.mockResolvedValue({
+        ...completeRelease,
+        tracks: [
+          {
+            ...completeRelease.tracks[0],
+            title: 'Song',
+            versionTitle: 'Chris Lake Remix',
+            contributors: [
+              { id: 'tc-1', name: 'Wizkid', role: 'FEATURED_ARTIST', position: 0 },
+            ],
+          },
+        ],
+      });
+
+      const detail = await service.findOne(USER, 'release-1');
+
+      expect(detail.tracks[0].displayTitle).toBe(
+        'Song (Chris Lake Remix) [feat. Wizkid]',
+      );
+    });
+  });
+
   describe('submit', () => {
     it('reports every missing item at once', async () => {
       prisma.release.findFirst.mockResolvedValue({
@@ -192,6 +330,28 @@ describe('ReleasesService', () => {
         'Cover artwork is required',
         'A primary genre is required',
         '"Test Track" has no audio file',
+      ]);
+    });
+
+    it('blocks a release billed to nobody', async () => {
+      prisma.release.findFirst.mockResolvedValue({
+        ...completeRelease,
+        // A feature with no lead. Nothing to put it on an artist page.
+        contributors: [
+          { id: 'rc-1', name: 'Guest', role: 'FEATURED_ARTIST', position: 0 },
+        ],
+      });
+
+      const error = await service
+        .submit(USER, 'release-1', { confirmRights: true })
+        .catch((caught: BadRequestException) => caught);
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      const response = (error as BadRequestException).getResponse() as {
+        message: string[];
+      };
+      expect(response.message).toEqual([
+        'At least one primary artist is required',
       ]);
     });
 

@@ -648,6 +648,9 @@ export class AuthService {
           dto.country !== undefined && {
             ownedLabel: { update: { country: dto.country.toUpperCase() } },
           }),
+        ...(dto.emailNotifications !== undefined && {
+          emailNotifications: dto.emailNotifications,
+        }),
         ...(artist && {
           artist: {
             update: {

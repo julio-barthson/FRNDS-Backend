@@ -3,6 +3,8 @@ import { APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
+import { AdminModule } from './admin/admin.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { AppService } from './app.service';
 import { AudioModule } from './audio/audio.module';
 import { AuthModule } from './auth/auth.module';
@@ -23,6 +25,8 @@ import { PrismaModule } from './prisma/prisma.module';
     MediaModule,
     AudioModule,
     CatalogueModule,
+    AdminModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [

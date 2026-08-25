@@ -24,10 +24,13 @@ export class CatalogueAccess {
   /** The artist profile behind a login. Created at signup, so it should exist. */
   async artistFor(
     userId: string,
-  ): Promise<{ id: string; labelId: string | null }> {
+  ): Promise<{ id: string; labelId: string | null; stageName: string }> {
     const artist = await this.prisma.artist.findUnique({
       where: { userId },
-      select: { id: true, labelId: true },
+      // `stageName` comes along because a new release is billed to it by
+      // default — the account uploading is the artist on the cover unless it
+      // says otherwise.
+      select: { id: true, labelId: true, stageName: true },
     });
 
     if (!artist) {

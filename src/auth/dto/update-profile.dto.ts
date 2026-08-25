@@ -66,4 +66,13 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsBoolean()
   isComplete?: boolean;
+
+  /**
+   * Whether transactional mail reaches them. Silences email only — the in-app
+   * notification centre is a record, not a preference, and turning it off would
+   * mean an artist could never find out why a release came back.
+   */
+  @IsOptional()
+  @IsBoolean()
+  emailNotifications?: boolean;
 }
