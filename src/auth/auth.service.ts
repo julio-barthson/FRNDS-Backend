@@ -10,8 +10,8 @@ import {
 import * as bcrypt from 'bcryptjs';
 import { OAuth2Client, type TokenPayload } from 'google-auth-library';
 import { randomInt } from 'node:crypto';
-import slugify from 'slugify';
 import { PrismaService } from '../prisma/prisma.service';
+import { uniqueSlug } from '../utils/slug';
 import { MailService } from '../mail/mail.service';
 import {
   accountDeletedTemplate,
@@ -831,28 +831,15 @@ export class AuthService {
     return { id: user.id, stageName: user.artist?.stageName ?? null };
   }
 
-  /** "Burna Boy" → "burna-boy", "burna-boy-2" if taken. */
-  private async uniqueLabelSlug(name: string): Promise<string> {
-    const base = slugify(name, { lower: true, strict: true }) || 'label';
-
-    let slug = base;
-    let counter = 1;
-    while (await this.prisma.label.findUnique({ where: { slug } })) {
-      counter += 1;
-      slug = `${base}-${counter}`;
-    }
-    return slug;
+  private uniqueLabelSlug(name: string): Promise<string> {
+    return uniqueSlug(name, 'label', async (slug) =>
+      Boolean(await this.prisma.label.findUnique({ where: { slug }, select: { id: true } })),
+    );
   }
 
-  private async uniqueArtistSlug(stageName: string): Promise<string> {
-    const base = slugify(stageName, { lower: true, strict: true }) || 'artist';
-
-    let slug = base;
-    let counter = 1;
-    while (await this.prisma.artist.findUnique({ where: { slug } })) {
-      counter += 1;
-      slug = `${base}-${counter}`;
-    }
-    return slug;
+  private uniqueArtistSlug(stageName: string): Promise<string> {
+    return uniqueSlug(stageName, 'artist', async (slug) =>
+      Boolean(await this.prisma.artist.findUnique({ where: { slug }, select: { id: true } })),
+    );
   }
 }

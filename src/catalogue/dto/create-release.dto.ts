@@ -84,6 +84,15 @@ export class TrackInputDto {
 }
 
 export class CreateReleaseDto {
+  /**
+   * Which roster artist this release belongs to. Ignored for a solo artist,
+   * who can only ever release as themselves, and required for a label unless
+   * its roster holds exactly one artist.
+   */
+  @IsOptional()
+  @IsUUID()
+  artistId?: string;
+
   @IsString()
   @MinLength(1)
   @MaxLength(200)

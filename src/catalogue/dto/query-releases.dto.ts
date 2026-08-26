@@ -4,6 +4,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   MaxLength,
   Min,
@@ -14,6 +15,15 @@ export class QueryReleasesDto {
   @IsOptional()
   @IsEnum(ReleaseStatus)
   status?: ReleaseStatus;
+
+  /**
+   * Narrows a label's catalogue to one roster artist. Meaningless for a solo
+   * artist, whose scope is already a single id — and safe either way, because
+   * the service intersects it with the caller's scope rather than trusting it.
+   */
+  @IsOptional()
+  @IsUUID()
+  artistId?: string;
 
   /** Matches on release or track title. */
   @IsOptional()

@@ -211,10 +211,10 @@ export class TracksService {
   }
 
   private async findEditableRelease(userId: string, releaseId: string) {
-    const artist = await this.access.artistFor(userId);
+    const scope = await this.access.scopeFor(userId);
 
     const release = await this.prisma.release.findFirst({
-      where: { id: releaseId, artistId: artist.id },
+      where: { id: releaseId, artistId: { in: scope.artistIds } },
       include: releaseInclude,
     });
 

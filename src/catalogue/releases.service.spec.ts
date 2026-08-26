@@ -3,11 +3,19 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../media/storage.service';
 import { AudioValidationService } from '../audio/audio-validation.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CatalogueAccess } from './catalogue.access';
 import { ReleasesService } from './releases.service';
 
 const USER = 'user-1';
 const ARTIST = { id: 'artist-1', labelId: null, stageName: 'Test Artist' };
+
+/** A solo artist: a scope of exactly one id, which is the label case with n=1. */
+const SCOPE = {
+  artistIds: [ARTIST.id],
+  labelId: null,
+  defaultArtist: { id: ARTIST.id, stageName: ARTIST.stageName },
+};
 
 const completeRelease = {
   id: 'release-1',
@@ -47,7 +55,8 @@ describe('ReleasesService', () => {
     };
   };
   let access: {
-    artistFor: jest.Mock;
+    scopeFor: jest.Mock;
+    resolveReleaseArtist: jest.Mock;
     assertEditable: jest.Mock;
     assertAssetUsable: jest.Mock;
   };
@@ -65,7 +74,8 @@ describe('ReleasesService', () => {
       },
     };
     access = {
-      artistFor: jest.fn().mockResolvedValue(ARTIST),
+      scopeFor: jest.fn().mockResolvedValue(SCOPE),
+      resolveReleaseArtist: jest.fn().mockResolvedValue(ARTIST),
       assertEditable: jest.fn(),
       assertAssetUsable: jest.fn(),
     };
@@ -78,6 +88,10 @@ describe('ReleasesService', () => {
         { provide: CatalogueAccess, useValue: access },
         { provide: StorageService, useValue: { isConfigured: false } },
         { provide: AudioValidationService, useValue: audio },
+        {
+          provide: NotificationsService,
+          useValue: { notifyAdmins: jest.fn(), notify: jest.fn() },
+        },
       ],
     }).compile();
 
@@ -397,11 +411,13 @@ describe('ReleasesService', () => {
         NotFoundException,
       );
 
-      // The lookup is scoped by artist, not filtered after the fact.
+      // The lookup is scoped by artist, not filtered after the fact. Scoping
+      // is a set now that a label reads its whole roster through this path;
+      // a solo artist is the one-element case.
       const calls = prisma.release.findFirst.mock.calls as [
-        { where: { artistId: string } },
+        { where: { artistId: { in: string[] } } },
       ][];
-      expect(calls[0][0].where.artistId).toBe(ARTIST.id);
+      expect(calls[0][0].where.artistId).toEqual({ in: [ARTIST.id] });
     });
   });
 });

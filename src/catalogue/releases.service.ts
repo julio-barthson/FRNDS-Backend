@@ -39,7 +39,8 @@ export class ReleasesService {
    * has to show the word "release".
    */
   async create(userId: string, dto: CreateReleaseDto) {
-    const artist = await this.access.artistFor(userId);
+    const scope = await this.access.scopeFor(userId);
+    const artist = await this.access.resolveReleaseArtist(scope, dto.artistId);
     const type = resolveType(dto.type, dto.tracks.length);
 
     if (type === 'SINGLE' && dto.tracks.length !== 1) {
@@ -126,12 +127,22 @@ export class ReleasesService {
 
   /** The dashboard list. */
   async list(userId: string, query: QueryReleasesDto) {
-    const artist = await this.access.artistFor(userId);
+    const scope = await this.access.scopeFor(userId);
     const page = query.page ?? 1;
     const limit = query.limit ?? DEFAULT_PAGE_SIZE;
 
+    // Intersected, never substituted. Spreading `query.artistId` over the scope
+    // clause would have replaced it, letting any caller read another label's
+    // catalogue by guessing an id. An out-of-scope filter yields an empty list,
+    // which matches how a foreign release id reads as missing.
+    const artistIds = query.artistId
+      ? scope.artistIds.filter((id) => id === query.artistId)
+      : scope.artistIds;
+
     const where = {
-      artistId: artist.id,
+      // `in` rather than a single id: a label sees its whole roster here, and
+      // an artist's own list is the one-element case of the same query.
+      artistId: { in: artistIds },
       ...(query.status && { status: query.status }),
       ...(query.search && {
         OR: [
@@ -367,10 +378,10 @@ export class ReleasesService {
 
   /** Scoped to the caller's artist, so someone else's id reads as missing. */
   private async findOwned(userId: string, releaseId: string) {
-    const artist = await this.access.artistFor(userId);
+    const scope = await this.access.scopeFor(userId);
 
     const release = await this.prisma.release.findFirst({
-      where: { id: releaseId, artistId: artist.id },
+      where: { id: releaseId, artistId: { in: scope.artistIds } },
       include: releaseInclude,
     });
 

@@ -9,6 +9,7 @@ import { AppService } from './app.service';
 import { AudioModule } from './audio/audio.module';
 import { AuthModule } from './auth/auth.module';
 import { CatalogueModule } from './catalogue/catalogue.module';
+import { LabelModule } from './label/label.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { MailModule } from './mail/mail.module';
 import { MediaModule } from './media/media.module';
@@ -25,6 +26,7 @@ import { PrismaModule } from './prisma/prisma.module';
     MediaModule,
     AudioModule,
     CatalogueModule,
+    LabelModule,
     AdminModule,
     NotificationsModule,
   ],
