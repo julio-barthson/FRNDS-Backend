@@ -98,7 +98,13 @@ export class ReviewService {
           submittedAt: true,
           reviewedAt: true,
           createdAt: true,
-          artist: { select: { id: true, stageName: true } },
+          artist: {
+            select: {
+              id: true,
+              stageName: true,
+              label: { select: { id: true, name: true } },
+            },
+          },
           artworkAsset: { select: { key: true, status: true } },
           contributors: {
             where: { role: 'PRIMARY_ARTIST' },
@@ -173,6 +179,16 @@ export class ReviewService {
             legalName: true,
             country: true,
             user: { select: { id: true, email: true, createdAt: true } },
+            // A roster artist has no login of its own, so without this a
+            // reviewer sees an artist with no account and no way to tell who
+            // submitted the release or who to reach about it.
+            label: {
+              select: {
+                id: true,
+                name: true,
+                owner: { select: { id: true, email: true } },
+              },
+            },
           },
         },
         reviewedBy: {

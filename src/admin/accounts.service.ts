@@ -162,7 +162,40 @@ export class AccountsService {
           },
         },
         ownedLabel: {
-          select: { id: true, name: true, slug: true, country: true },
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            country: true,
+            // The roster, and who has been let into each artist. Both are
+            // invisible to the artist-shaped view above, and both are things
+            // support gets asked about: "which artists does this label have"
+            // and "why can this person see my catalogue".
+            artists: {
+              select: {
+                id: true,
+                stageName: true,
+                slug: true,
+                country: true,
+                spotifyArtistId: true,
+                createdAt: true,
+                _count: { select: { releases: true } },
+                seats: {
+                  where: { status: { not: 'REVOKED' } },
+                  select: {
+                    id: true,
+                    email: true,
+                    role: true,
+                    status: true,
+                    acceptedAt: true,
+                    createdAt: true,
+                  },
+                  orderBy: { createdAt: 'asc' },
+                },
+              },
+              orderBy: { stageName: 'asc' },
+            },
+          },
         },
         _count: { select: { sessions: true } },
       },
@@ -170,11 +203,17 @@ export class AccountsService {
 
     if (!user) throw new NotFoundException('Account not found');
 
-    // Releases belong to the artist row, so a label account correctly has none
-    // until roster management exists.
-    const releases = user.artist
-      ? await this.prisma.release.findMany({
-          where: { artistId: user.artist.id },
+    // Releases hang off the artist row, so a label's catalogue is its roster's.
+    // Reading only `user.artist` showed an empty list for every label, which was
+    // right until roster management existed and silently wrong afterwards.
+    const artistIds = user.artist
+      ? [user.artist.id]
+      : (user.ownedLabel?.artists ?? []).map((artist) => artist.id);
+
+    const releases =
+      artistIds.length > 0
+        ? await this.prisma.release.findMany({
+          where: { artistId: { in: artistIds } },
           orderBy: { createdAt: 'desc' },
           select: {
             id: true,
@@ -186,9 +225,13 @@ export class AccountsService {
             createdAt: true,
             artworkAsset: { select: { key: true, status: true } },
             _count: { select: { tracks: true } },
+            // Which roster artist it belongs to. On an artist account this is
+            // always the same name; on a label's it is the column that makes
+            // the list readable.
+            artist: { select: { id: true, stageName: true } },
           },
         })
-      : [];
+        : [];
 
     return {
       ...user,
@@ -211,6 +254,7 @@ export class AccountsService {
           reviewedAt: release.reviewedAt,
           createdAt: release.createdAt,
           trackCount: release._count.tracks,
+          artist: release.artist,
           artworkUrl:
             release.artworkAsset?.status === 'UPLOADED' &&
             this.storage.isConfigured
