@@ -193,7 +193,12 @@ model Artist {
   slug      String  @unique
   legalName String?
   bio       String?
+  // A URL that came from somewhere else — a Google profile picture, say. An
+  // avatar UPLOADED to FRNDSHQ goes through `avatarAsset` instead, because the
+  // bucket is private and a signed URL would be dead within five minutes.
   avatarUrl String?
+  // @unique so one upload backs one artist, matching Release.artworkAssetId.
+  avatarAssetId String? @unique
   country   String?
 
   // Set once we can match a catalogue to a streaming profile. Unused until the
@@ -204,8 +209,9 @@ model Artist {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user     User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  label    Label?    @relation(fields: [labelId], references: [id], onDelete: SetNull)
+  user        User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label       Label?      @relation(fields: [labelId], references: [id], onDelete: SetNull)
+  avatarAsset MediaAsset? @relation("ArtistAvatar", fields: [avatarAssetId], references: [id], onDelete: SetNull)
   releases Release[]
 
   @@index([labelId])
@@ -435,6 +441,7 @@ model MediaAsset {
   owner          User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   trackAudio     Track?   @relation("TrackAudio")
   releaseArtwork Release? @relation("ReleaseArtwork")
+  artistAvatar   Artist?  @relation("ArtistAvatar")
 
   @@index([ownerId, kind])
   @@index([status, createdAt])

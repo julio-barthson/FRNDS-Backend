@@ -4,6 +4,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { DOWNLOAD_URL_TTL_SECONDS } from '../media/media.constants';
+import { StorageService } from '../media/storage.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { uniqueSlug } from '../utils/slug';
 import {
@@ -68,6 +70,7 @@ const rosterArtistSelect = {
   bio: true,
   country: true,
   avatarUrl: true,
+  avatarAsset: { select: { key: true, status: true } },
   spotifyArtistId: true,
   appleMusicArtistId: true,
   userId: true,
@@ -76,7 +79,68 @@ const rosterArtistSelect = {
 
 @Injectable()
 export class RosterService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+  ) {}
+
+  /**
+   * Collapses the two ways an artist can have a picture into the one field the
+   * app reads.
+   *
+   * An uploaded avatar lives in a private bucket, so it is signed per response
+   * and expires; `avatarUrl` on its own is for pictures that came from
+   * elsewhere, like a Google profile image, and is handed back untouched.
+   */
+  private async withAvatar<
+    T extends {
+      avatarUrl: string | null;
+      avatarAsset: { key: string; status: string } | null;
+    },
+  >(artist: T): Promise<Omit<T, 'avatarAsset'> & { avatarUrl: string | null }> {
+    const { avatarAsset, ...rest } = artist;
+
+    const signed =
+      avatarAsset?.status === 'UPLOADED' && this.storage.isConfigured
+        ? await this.storage.presignGet(
+            avatarAsset.key,
+            DOWNLOAD_URL_TTL_SECONDS,
+          )
+        : null;
+
+    return { ...rest, avatarUrl: signed ?? artist.avatarUrl };
+  }
+
+  /**
+   * An avatar has to be the caller's own finished AVATAR upload.
+   *
+   * Deliberately not `CatalogueAccess.assertAssetUsable`: that also enforces
+   * the one-asset-one-release rule for artwork and audio, which does not apply
+   * here, and it lives in a module this one does not depend on.
+   */
+  private async assertAvatarUsable(userId: string, assetId: string) {
+    const asset = await this.prisma.mediaAsset.findUnique({
+      where: { id: assetId },
+      select: { id: true, ownerId: true, kind: true, status: true },
+    });
+
+    if (!asset || asset.status === 'DELETED') {
+      throw new NotFoundException('Uploaded file not found');
+    }
+    if (asset.ownerId !== userId) {
+      throw new ForbiddenException('This file belongs to another account');
+    }
+    if (asset.kind !== 'AVATAR') {
+      throw new BadRequestException(
+        `Expected an avatar here, got ${asset.kind.toLowerCase()}`,
+      );
+    }
+    if (asset.status !== 'UPLOADED') {
+      throw new BadRequestException(
+        'This file has not been confirmed yet. Call POST /media/{id}/confirm first.',
+      );
+    }
+  }
 
   /**
    * The label behind a login.
@@ -112,15 +176,17 @@ export class RosterService {
       orderBy: { stageName: 'asc' },
     });
 
-    return artists.map(({ _count, userId: artistUserId, ...artist }) => ({
-      ...artist,
-      releaseCount: _count.releases,
-      // Whether this identity also has a login of its own. False for every
-      // artist a label creates; the seat layer that changes it is a later
-      // phase, and the app needs to know not to offer edits that a seated
-      // artist owns.
-      hasOwnLogin: artistUserId !== null,
-    }));
+    return Promise.all(
+      artists.map(async ({ _count, userId: artistUserId, ...artist }) => ({
+        ...(await this.withAvatar(artist)),
+        releaseCount: _count.releases,
+        // Whether this identity also has a login of its own. False for every
+        // artist a label creates; the seat layer that changes it is a later
+        // phase, and the app needs to know not to offer edits that a seated
+        // artist owns.
+        hasOwnLogin: artistUserId !== null,
+      })),
+    );
   }
 
   async findOne(userId: string, artistId: string) {
@@ -134,7 +200,7 @@ export class RosterService {
     // Scoped to the label, so another label's artist reads as missing rather
     // than forbidden — the same rule release ids follow.
     if (!artist) throw new NotFoundException('Artist not found');
-    return artist;
+    return this.withAvatar(artist);
   }
 
   async create(userId: string, dto: CreateRosterArtistDto) {
@@ -156,8 +222,13 @@ export class RosterService {
       throw new BadRequestException(`${stageName} is already on your roster`);
     }
 
-    return this.prisma.artist.create({
+    if (dto.avatarAssetId) {
+      await this.assertAvatarUsable(userId, dto.avatarAssetId);
+    }
+
+    const created = await this.prisma.artist.create({
       data: {
+        avatarAssetId: dto.avatarAssetId,
         labelId: label.id,
         // No user: a roster artist is an identity the label owns. This is the
         // case `Artist.userId` was made nullable for.
@@ -173,6 +244,8 @@ export class RosterService {
       },
       select: rosterArtistSelect,
     });
+
+    return this.withAvatar(created);
   }
 
   async update(userId: string, artistId: string, dto: UpdateRosterArtistDto) {
@@ -183,9 +256,16 @@ export class RosterService {
     const stageName = dto.stageName?.trim();
     const renamed = stageName !== undefined && stageName !== existing.stageName;
 
-    return this.prisma.artist.update({
+    if (dto.avatarAssetId) {
+      await this.assertAvatarUsable(userId, dto.avatarAssetId);
+    }
+
+    const updated = await this.prisma.artist.update({
       where: { id: artistId },
       data: {
+        ...(dto.avatarAssetId !== undefined && {
+          avatarAssetId: dto.avatarAssetId,
+        }),
         ...(stageName !== undefined && { stageName }),
         ...(renamed && { slug: await this.uniqueArtistSlug(stageName) }),
         ...(dto.legalName !== undefined && { legalName: dto.legalName.trim() }),
@@ -203,6 +283,8 @@ export class RosterService {
       },
       select: rosterArtistSelect,
     });
+
+    return this.withAvatar(updated);
   }
 
   /**

@@ -137,8 +137,7 @@ export async function toReleaseDetail(
       // is naturally set on the release, composing the track's title from its
       // own empty list left the page header reading "Song (feat. X)" over a
       // track row still reading "Song".
-      displayArtist:
-        displayArtist(track.contributors) || releaseDisplayArtist,
+      displayArtist: displayArtist(track.contributors) || releaseDisplayArtist,
       // Composed here rather than stored, and never written back into `title`.
       // See `billing.ts` — a store builds this string itself, and a title with
       // "feat." typed into it is a rejection.

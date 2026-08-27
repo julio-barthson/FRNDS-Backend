@@ -3,6 +3,7 @@ import {
   releaseSummarySelect,
   toReleaseSummary,
 } from '../catalogue/release.mapper';
+import { DOWNLOAD_URL_TTL_SECONDS } from '../media/media.constants';
 import { StorageService } from '../media/storage.service';
 import { PrismaService } from '../prisma/prisma.service';
 import type { ReleaseStatus } from '../generated/prisma/enums';
@@ -32,6 +33,7 @@ export class OverviewService {
             id: true,
             stageName: true,
             avatarUrl: true,
+            avatarAsset: { select: { key: true, status: true } },
             spotifyArtistId: true,
             _count: { select: { releases: true } },
           },
@@ -53,7 +55,13 @@ export class OverviewService {
       return {
         label: { id: label.id, name: label.name },
         roster: [],
-        pipeline: { drafts: 0, awaitingReview: 0, needsChanges: 0, ready: 0, total: 0 },
+        pipeline: {
+          drafts: 0,
+          awaitingReview: 0,
+          needsChanges: 0,
+          ready: 0,
+          total: 0,
+        },
         actionable: [],
       };
     }
@@ -69,7 +77,10 @@ export class OverviewService {
       // artwork — comes from one of them. Capped: this feeds a short list on a
       // phone, not a work queue.
       this.prisma.release.findMany({
-        where: { artistId: { in: artistIds }, status: { in: ['DRAFT', 'REJECTED'] } },
+        where: {
+          artistId: { in: artistIds },
+          status: { in: ['DRAFT', 'REJECTED'] },
+        },
         orderBy: { createdAt: 'desc' },
         take: 20,
         select: releaseSummarySelect,
@@ -84,15 +95,24 @@ export class OverviewService {
     return {
       label: { id: label.id, name: label.name },
 
-      roster: label.artists.map((artist) => ({
-        id: artist.id,
-        stageName: artist.stageName,
-        avatarUrl: artist.avatarUrl,
-        releaseCount: artist._count.releases,
-        // Drives a gentle nudge on the dashboard: an artist with no DSP profile
-        // linked is fine now and a problem at delivery.
-        hasSpotify: artist.spotifyArtistId !== null,
-      })),
+      roster: await Promise.all(
+        label.artists.map(async (artist) => ({
+          id: artist.id,
+          stageName: artist.stageName,
+          avatarUrl:
+            artist.avatarAsset?.status === 'UPLOADED' &&
+            this.storage.isConfigured
+              ? await this.storage.presignGet(
+                  artist.avatarAsset.key,
+                  DOWNLOAD_URL_TTL_SECONDS,
+                )
+              : artist.avatarUrl,
+          releaseCount: artist._count.releases,
+          // Drives a gentle nudge on the dashboard: an artist with no DSP profile
+          // linked is fine now and a problem at delivery.
+          hasSpotify: artist.spotifyArtistId !== null,
+        })),
+      ),
 
       pipeline: {
         drafts: countOf('DRAFT'),

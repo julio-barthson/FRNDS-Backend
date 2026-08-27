@@ -1,5 +1,6 @@
 import {
   IsISO31661Alpha2,
+  IsUUID,
   IsOptional,
   IsString,
   MaxLength,
@@ -38,6 +39,14 @@ export class CreateRosterArtistDto {
   @IsString()
   @MaxLength(500)
   avatarUrl?: string;
+
+  /**
+   * A confirmed AVATAR upload. The bucket is private, so responses hand back a
+   * signed `avatarUrl` derived from this rather than a permanent link.
+   */
+  @IsOptional()
+  @IsUUID()
+  avatarAssetId?: string;
 
   /**
    * The DSP artist pages this roster artist maps to. A full profile URL is
@@ -84,6 +93,14 @@ export class UpdateRosterArtistDto {
   @IsString()
   @MaxLength(500)
   avatarUrl?: string;
+
+  /**
+   * A confirmed AVATAR upload. The bucket is private, so responses hand back a
+   * signed `avatarUrl` derived from this rather than a permanent link.
+   */
+  @IsOptional()
+  @IsUUID()
+  avatarAssetId?: string;
 
   @IsOptional()
   @IsString()

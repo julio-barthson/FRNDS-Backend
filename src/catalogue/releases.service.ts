@@ -7,13 +7,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../media/storage.service';
 import { AudioValidationService } from '../audio/audio-validation.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { DOWNLOAD_URL_TTL_SECONDS } from '../media/media.constants';
 import type { ReleaseType } from '../generated/prisma/enums';
-import {
-  assertNoTypedFeature,
-  displayArtist,
-  normaliseContributors,
-} from './billing';
+import { assertNoTypedFeature, normaliseContributors } from './billing';
 import { CatalogueAccess } from './catalogue.access';
 import { CreateReleaseDto, TrackInputDto } from './dto/create-release.dto';
 import { QueryReleasesDto } from './dto/query-releases.dto';
@@ -84,7 +79,13 @@ export class ReleasesService {
     // list replaces it outright.
     const contributors = dto.contributors?.length
       ? normaliseContributors(dto.contributors)
-      : [{ name: artist.stageName, role: 'PRIMARY_ARTIST' as const, position: 0 }];
+      : [
+          {
+            name: artist.stageName,
+            role: 'PRIMARY_ARTIST' as const,
+            position: 0,
+          },
+        ];
 
     const release = await this.prisma.release.create({
       data: {

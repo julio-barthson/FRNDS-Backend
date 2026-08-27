@@ -77,7 +77,10 @@ export class CatalogueAccess {
         // and billing a release to the wrong artist.
         defaultArtist:
           label.artists.length === 1
-            ? { id: label.artists[0]!.id, stageName: label.artists[0]!.stageName }
+            ? {
+                id: label.artists[0].id,
+                stageName: label.artists[0].stageName,
+              }
             : null,
       };
     }
