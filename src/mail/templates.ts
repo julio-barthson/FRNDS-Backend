@@ -34,6 +34,19 @@ export function verifyEmailTemplate(name: string, otp: string): string {
   );
 }
 
+export function seatInviteTemplate(
+  labelName: string,
+  artistName: string,
+  code: string,
+): string {
+  return layout(
+    `${labelName} invited you to ${BRAND}`,
+    `<p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#374151;">${labelName} has given you access to <strong>${artistName}</strong>. Sign in to ${BRAND} with this address, then enter the code below to accept.</p>
+     ${otpBlock(code)}
+     <p style="margin:0;font-size:14px;line-height:1.6;color:#374151;">The code expires in seven days. If you were not expecting this, you can ignore this email — nothing has been shared with you until you accept.</p>`,
+  );
+}
+
 export function welcomeTemplate(name: string): string {
   return layout(
     `Welcome to ${BRAND}${name ? `, ${name}` : ''}`,

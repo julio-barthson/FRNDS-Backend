@@ -13,6 +13,8 @@ const ARTIST = { id: 'artist-1', labelId: null, stageName: 'Test Artist' };
 /** A solo artist: a scope of exactly one id, which is the label case with n=1. */
 const SCOPE = {
   artistIds: [ARTIST.id],
+  // A solo artist owns what they can see; only a VIEWER seat narrows this.
+  writableArtistIds: [ARTIST.id],
   labelId: null,
   defaultArtist: { id: ARTIST.id, stageName: ARTIST.stageName },
 };
@@ -57,6 +59,7 @@ describe('ReleasesService', () => {
   let access: {
     scopeFor: jest.Mock;
     resolveReleaseArtist: jest.Mock;
+    assertWritable: jest.Mock;
     assertEditable: jest.Mock;
     assertAssetUsable: jest.Mock;
   };
@@ -76,6 +79,7 @@ describe('ReleasesService', () => {
     access = {
       scopeFor: jest.fn().mockResolvedValue(SCOPE),
       resolveReleaseArtist: jest.fn().mockResolvedValue(ARTIST),
+      assertWritable: jest.fn(),
       assertEditable: jest.fn(),
       assertAssetUsable: jest.fn(),
     };

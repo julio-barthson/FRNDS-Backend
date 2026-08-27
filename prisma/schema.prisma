@@ -94,6 +94,11 @@ model User {
   reviewedReleases Release[]      @relation("ReleaseReviewer")
   notifications    Notification[]
 
+  // Access this person holds on someone else's roster artist, and the invites
+  // they have sent out. Two relations because a label owner is on both sides.
+  artistSeats      ArtistSeat[]   @relation("SeatHolder")
+  sentArtistSeats  ArtistSeat[]   @relation("SeatInviter")
+
   @@index([role])
   @@index([accountStatus])
 }
@@ -163,6 +168,63 @@ enum AdminPosition {
 
 // Scaffolded now, not exposed in this phase. Costs one table and a nullable FK,
 // and saves reworking every release query when the label dashboard arrives.
+/**
+ * A person's access to one roster artist.
+ *
+ * Deliberately separate from `Artist.userId`. That field says "this artist row
+ * IS this user" — one to one, and unique, so it can hold neither a manager who
+ * looks after three artists nor a revocation that should not erase the identity
+ * itself. A seat is access: granted, scoped, and taken back, while the label
+ * keeps the catalogue.
+ */
+model ArtistSeat {
+  id       String @id @default(uuid())
+  artistId String
+
+  // Bound when the invite is accepted. Null until then, because the person
+  // invited may not have an account yet.
+  userId String?
+
+  // Who it was sent to. Kept after acceptance so a revoked seat can be
+  // re-invited, and so the label sees who it invited rather than a null.
+  email  String
+  role   SeatRole   @default(VIEWER)
+  status SeatStatus @default(PENDING)
+
+  // bcrypt of the six-digit code, the same shape as the auth OTPs — a stolen
+  // row must not be replayable as an invite.
+  inviteCodeHash String?
+  expiresAt      DateTime?
+  acceptedAt     DateTime?
+
+  invitedById String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  artist    Artist @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  user      User?  @relation("SeatHolder", fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy User   @relation("SeatInviter", fields: [invitedById], references: [id], onDelete: Cascade)
+
+  // One outstanding seat per address per artist. Re-inviting updates the row
+  // rather than stacking codes that all still work.
+  @@unique([artistId, email])
+  @@index([userId])
+}
+
+enum SeatRole {
+  /** Reads the artist and their catalogue. Changes nothing. */
+  VIEWER
+  /** Also creates and edits releases for that artist. */
+  MANAGER
+}
+
+enum SeatStatus {
+  PENDING
+  ACTIVE
+  REVOKED
+}
+
 model Label {
   id      String  @id @default(uuid())
   ownerId String  @unique
@@ -212,6 +274,7 @@ model Artist {
   user        User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
   label       Label?      @relation(fields: [labelId], references: [id], onDelete: SetNull)
   avatarAsset MediaAsset? @relation("ArtistAvatar", fields: [avatarAssetId], references: [id], onDelete: SetNull)
+  seats       ArtistSeat[]
   releases Release[]
 
   @@index([labelId])

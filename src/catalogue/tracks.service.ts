@@ -219,6 +219,9 @@ export class TracksService {
     });
 
     if (!release) throw new NotFoundException('Release not found');
+    // Every caller of this changes something, so the seat check belongs here
+    // rather than repeated across four track methods.
+    this.access.assertWritable(scope, release.artistId);
     this.access.assertEditable(release.status);
 
     return release;

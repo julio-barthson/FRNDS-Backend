@@ -197,7 +197,7 @@ export class ReleasesService {
   }
 
   async update(userId: string, releaseId: string, dto: UpdateReleaseDto) {
-    const existing = await this.findOwned(userId, releaseId);
+    const existing = await this.findWritable(userId, releaseId);
     this.access.assertEditable(existing.status);
 
     if (dto.artworkAssetId) {
@@ -271,7 +271,7 @@ export class ReleasesService {
    * objects inline would strand the row if storage were briefly unreachable.
    */
   async remove(userId: string, releaseId: string) {
-    const existing = await this.findOwned(userId, releaseId);
+    const existing = await this.findWritable(userId, releaseId);
     this.access.assertEditable(existing.status);
 
     await this.prisma.release.delete({ where: { id: releaseId } });
@@ -292,7 +292,7 @@ export class ReleasesService {
       );
     }
 
-    const existing = await this.findOwned(userId, releaseId);
+    const existing = await this.findWritable(userId, releaseId);
     this.access.assertEditable(existing.status);
 
     const problems = collectSubmissionProblems(existing);
@@ -347,6 +347,26 @@ export class ReleasesService {
     });
 
     if (!release) throw new NotFoundException('Release not found');
+    return release;
+  }
+
+  /**
+   * The same lookup, for the paths that then change something.
+   *
+   * Separate rather than a flag so a new mutation cannot quietly inherit read
+   * access by calling the wrong one — a VIEWER seat can reach every release
+   * here, and only this refuses them.
+   */
+  private async findWritable(userId: string, releaseId: string) {
+    const scope = await this.access.scopeFor(userId);
+
+    const release = await this.prisma.release.findFirst({
+      where: { id: releaseId, artistId: { in: scope.artistIds } },
+      include: releaseInclude,
+    });
+
+    if (!release) throw new NotFoundException('Release not found');
+    this.access.assertWritable(scope, release.artistId);
     return release;
   }
 }

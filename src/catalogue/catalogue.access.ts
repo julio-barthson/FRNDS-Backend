@@ -22,8 +22,17 @@ const EDITABLE_STATUSES: ReleaseStatus[] = ['DRAFT', 'REJECTED'];
  * {@link CatalogueAccess.scopeFor}.
  */
 export interface CatalogueScope {
-  /** One id for a solo artist; the whole roster for a label. Never empty for an artist. */
+  /** Everything the caller may READ: their own artist, a whole roster, seats. */
   artistIds: string[];
+  /**
+   * The subset they may CHANGE.
+   *
+   * Identical to `artistIds` for a solo artist and for a label — they own what
+   * they can see. It narrows only for seats, where a VIEWER reads an artist's
+   * catalogue without being able to touch it. Read paths scope by `artistIds`;
+   * every mutation goes through {@link CatalogueAccess.assertWritable}.
+   */
+  writableArtistIds: string[];
   /** The label behind the caller, whether they are the label or signed to one. */
   labelId: string | null;
   /** Who a new release bills to when the caller does not say. Null forces a choice. */
@@ -47,47 +56,81 @@ export class CatalogueAccess {
    * exists.
    */
   async scopeFor(userId: string): Promise<CatalogueScope> {
-    const artist = await this.prisma.artist.findUnique({
-      where: { userId },
-      // `stageName` comes along because a new release is billed to it by
-      // default — the account uploading is the artist on the cover unless it
-      // says otherwise.
-      select: { id: true, labelId: true, stageName: true },
-    });
+    // All three are unioned rather than chosen between: an independent artist
+    // can also hold a seat on someone else's roster, and picking the first
+    // match would have made half their catalogue disappear.
+    const [artist, label, seats] = await Promise.all([
+      this.prisma.artist.findUnique({
+        where: { userId },
+        // `stageName` comes along because a new release is billed to it by
+        // default — the account uploading is the artist on the cover unless it
+        // says otherwise.
+        select: { id: true, labelId: true, stageName: true },
+      }),
+      this.prisma.label.findUnique({
+        where: { ownerId: userId },
+        select: { id: true, artists: { select: { id: true, stageName: true } } },
+      }),
+      this.prisma.artistSeat.findMany({
+        where: { userId, status: 'ACTIVE' },
+        select: { artistId: true, role: true },
+      }),
+    ]);
+
+    const readable = new Set<string>();
+    const writable = new Set<string>();
 
     if (artist) {
-      return {
-        artistIds: [artist.id],
-        labelId: artist.labelId,
-        defaultArtist: { id: artist.id, stageName: artist.stageName },
-      };
+      readable.add(artist.id);
+      writable.add(artist.id);
     }
 
-    const label = await this.prisma.label.findUnique({
-      where: { ownerId: userId },
-      select: { id: true, artists: { select: { id: true, stageName: true } } },
-    });
-
-    if (label) {
-      return {
-        artistIds: label.artists.map((rosterArtist) => rosterArtist.id),
-        labelId: label.id,
-        // Deliberately null: a label with more than one artist cannot have a
-        // sensible default, so `create` makes it name one rather than guessing
-        // and billing a release to the wrong artist.
-        defaultArtist:
-          label.artists.length === 1
-            ? {
-                id: label.artists[0].id,
-                stageName: label.artists[0].stageName,
-              }
-            : null,
-      };
+    for (const rosterArtist of label?.artists ?? []) {
+      readable.add(rosterArtist.id);
+      writable.add(rosterArtist.id);
     }
 
-    throw new ForbiddenException(
-      'This account has no artist or label profile and cannot manage releases',
-    );
+    for (const seat of seats) {
+      readable.add(seat.artistId);
+      // The whole point of the role: a VIEWER sees the catalogue and cannot
+      // change it.
+      if (seat.role === 'MANAGER') writable.add(seat.artistId);
+    }
+
+    if (readable.size === 0) {
+      throw new ForbiddenException(
+        'This account has no artist or label profile and cannot manage releases',
+      );
+    }
+
+    return {
+      artistIds: [...readable],
+      writableArtistIds: [...writable],
+      labelId: artist?.labelId ?? label?.id ?? null,
+      // Their own artist row bills a release without asking. A label with one
+      // artist has no ambiguity either. Anything else has to be named, rather
+      // than guessed at and billed to the wrong artist.
+      defaultArtist: artist
+        ? { id: artist.id, stageName: artist.stageName }
+        : label?.artists.length === 1
+          ? { id: label.artists[0].id, stageName: label.artists[0].stageName }
+          : null,
+    };
+  }
+
+  /**
+   * Refuses a change to an artist the caller may only read.
+   *
+   * A 403 rather than a 404 on purpose: unlike a foreign release id, the caller
+   * can legitimately see this one, so pretending it does not exist would be
+   * confusing rather than protective.
+   */
+  assertWritable(scope: CatalogueScope, artistId: string) {
+    if (!scope.writableArtistIds.includes(artistId)) {
+      throw new ForbiddenException(
+        'You have view-only access to this artist and cannot change their releases',
+      );
+    }
   }
 
   /**
@@ -109,7 +152,14 @@ export class CatalogueAccess {
       );
     }
 
-    if (!scope.artistIds.includes(target)) {
+    // Checked against the writable set: a VIEWER seat can see an artist but
+    // must not be able to start a release under their name.
+    if (!scope.writableArtistIds.includes(target)) {
+      if (scope.artistIds.includes(target)) {
+        throw new ForbiddenException(
+          'You have view-only access to this artist and cannot create releases for them',
+        );
+      }
       throw new NotFoundException('Artist not found');
     }
 
