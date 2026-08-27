@@ -35,6 +35,65 @@ export type ReleaseWithTracks = Prisma.ReleaseGetPayload<{
 }>;
 
 /**
+ * The catalogue-row shape: enough to draw a list without the contributor and
+ * audio-asset weight the detail view carries.
+ *
+ * Shared rather than inlined because the label overview builds the same rows
+ * from a different query, and a second copy of the artwork-signing branch is
+ * exactly the kind of thing that drifts.
+ */
+export const releaseSummarySelect = {
+  id: true,
+  title: true,
+  type: true,
+  status: true,
+  releaseDate: true,
+  submittedAt: true,
+  createdAt: true,
+  artworkAsset: { select: { key: true, status: true } },
+  // Only the primaries: the list shows who a release is by, and a feature
+  // belongs to a track, not to the row in a catalogue.
+  contributors: {
+    where: { role: 'PRIMARY_ARTIST' as const },
+    orderBy: { position: 'asc' as const },
+    select: { name: true, role: true, position: true },
+  },
+  tracks: {
+    orderBy: { trackNumber: 'asc' as const },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      durationSec: true,
+    },
+  },
+} satisfies Prisma.ReleaseSelect;
+
+export type ReleaseForSummary = Prisma.ReleaseGetPayload<{
+  select: typeof releaseSummarySelect;
+}>;
+
+export async function toReleaseSummary(
+  release: ReleaseForSummary,
+  storage: StorageService,
+) {
+  return {
+    id: release.id,
+    title: release.title,
+    type: release.type,
+    status: release.status,
+    releaseDate: release.releaseDate,
+    submittedAt: release.submittedAt,
+    createdAt: release.createdAt,
+    trackCount: release.tracks.length,
+    displayArtist: displayArtist(release.contributors),
+    // Handy for a single, where the app shows one row per track.
+    tracks: release.tracks,
+    artworkUrl: await signIfPossible(storage, release.artworkAsset),
+  };
+}
+
+/**
  * Signing is local HMAC work, not a network call, so handing out fresh URLs
  * with every response is cheap. They expire in five minutes; the client should
  * fetch the list again rather than cache them.

@@ -19,7 +19,12 @@ import { CreateReleaseDto, TrackInputDto } from './dto/create-release.dto';
 import { QueryReleasesDto } from './dto/query-releases.dto';
 import { SubmitReleaseDto } from './dto/submit-release.dto';
 import { UpdateReleaseDto } from './dto/update-release.dto';
-import { releaseInclude, toReleaseDetail } from './release.mapper';
+import {
+  releaseInclude,
+  releaseSummarySelect,
+  toReleaseDetail,
+  toReleaseSummary,
+} from './release.mapper';
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -168,57 +173,12 @@ export class ReleasesService {
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
-        select: {
-          id: true,
-          title: true,
-          type: true,
-          status: true,
-          releaseDate: true,
-          submittedAt: true,
-          createdAt: true,
-          artworkAsset: { select: { key: true, status: true } },
-          // Only the primaries: the list shows who a release is by, and a
-          // feature belongs to a track, not to the row in a catalogue.
-          contributors: {
-            where: { role: 'PRIMARY_ARTIST' },
-            orderBy: { position: 'asc' },
-            select: { name: true, role: true, position: true },
-          },
-          tracks: {
-            orderBy: { trackNumber: 'asc' },
-            select: {
-              id: true,
-              title: true,
-              status: true,
-              durationSec: true,
-            },
-          },
-        },
+        select: releaseSummarySelect,
       }),
     ]);
 
     const items = await Promise.all(
-      releases.map(async (release) => ({
-        id: release.id,
-        title: release.title,
-        type: release.type,
-        status: release.status,
-        releaseDate: release.releaseDate,
-        submittedAt: release.submittedAt,
-        createdAt: release.createdAt,
-        trackCount: release.tracks.length,
-        displayArtist: displayArtist(release.contributors),
-        // Handy for a single, where the app shows one row per track.
-        tracks: release.tracks,
-        artworkUrl:
-          release.artworkAsset?.status === 'UPLOADED' &&
-          this.storage.isConfigured
-            ? await this.storage.presignGet(
-                release.artworkAsset.key,
-                DOWNLOAD_URL_TTL_SECONDS,
-              )
-            : null,
-      })),
+      releases.map((release) => toReleaseSummary(release, this.storage)),
     );
 
     return {
