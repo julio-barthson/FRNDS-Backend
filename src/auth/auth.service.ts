@@ -191,12 +191,27 @@ export class AuthService {
       },
     });
 
-    await this.mail.sendMail({
-      toEmail: user.email,
-      toName: user.artist?.stageName,
-      subject: 'Welcome to FRNDSHQ',
-      html: welcomeTemplate(user.artist?.stageName ?? ''),
-    });
+    // Deliberately not awaited. The address is already verified by this point,
+    // so the welcome note is decoration — but awaiting it put a Mailjet round
+    // trip in front of the reply, and a client that gave up waiting saw a
+    // failure for a verification that had already succeeded. The retry then hit
+    // an account whose OTP was cleared and got "Email is already verified",
+    // which is a dead end.
+    //
+    // `sendMail` handles its own errors and resolves either way, so there is
+    // nothing here that can reject; the catch is belt and braces.
+    void this.mail
+      .sendMail({
+        toEmail: user.email,
+        toName: user.artist?.stageName,
+        subject: 'Welcome to FRNDSHQ',
+        html: welcomeTemplate(user.artist?.stageName ?? ''),
+      })
+      .catch((error: unknown) => {
+        this.logger.error(
+          `Welcome mail failed for ${user.email}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
 
     return this.startSession(user.id, device);
   }
@@ -283,14 +298,19 @@ export class AuthService {
     await this.prisma.$transaction(async (tx) => {
       // Nothing can reference these yet — the catalogue is gated behind
       // onboarding — so replacing the row outright is safe.
-      if (user.artist) await tx.artist.delete({ where: { id: user.artist.id } });
+      if (user.artist)
+        await tx.artist.delete({ where: { id: user.artist.id } });
       if (user.ownedLabel) {
         await tx.label.delete({ where: { id: user.ownedLabel.id } });
       }
 
       if (dto.accountType === 'LABEL') {
         await tx.label.create({
-          data: { ownerId: userId, name, slug: await this.uniqueLabelSlug(name) },
+          data: {
+            ownerId: userId,
+            name,
+            slug: await this.uniqueLabelSlug(name),
+          },
         });
         await tx.user.update({
           where: { id: userId },
@@ -330,7 +350,9 @@ export class AuthService {
   private async verifyGoogleIdToken(idToken: string) {
     const audience = this.googleAudiences;
     if (audience.length === 0) {
-      this.logger.error('GOOGLE_CLIENT_ID is not set — cannot verify ID tokens');
+      this.logger.error(
+        'GOOGLE_CLIENT_ID is not set — cannot verify ID tokens',
+      );
       throw new BadRequestException('Google sign-in is not available.');
     }
 
@@ -339,7 +361,10 @@ export class AuthService {
       // `verifyIdToken` checks the signature against Google's rotating public
       // keys and asserts issuer, audience and expiry. Anything it dislikes
       // throws, so a failure here means the token is not trustworthy.
-      const ticket = await this.googleClient.verifyIdToken({ idToken, audience });
+      const ticket = await this.googleClient.verifyIdToken({
+        idToken,
+        audience,
+      });
       payload = ticket.getPayload();
     } catch (error) {
       this.logger.warn(
@@ -349,7 +374,9 @@ export class AuthService {
     }
 
     if (!payload?.email || !payload.sub) {
-      throw new UnauthorizedException('Google did not return an email address.');
+      throw new UnauthorizedException(
+        'Google did not return an email address.',
+      );
     }
 
     // Without this an attacker could register any address at an identity
@@ -833,13 +860,23 @@ export class AuthService {
 
   private uniqueLabelSlug(name: string): Promise<string> {
     return uniqueSlug(name, 'label', async (slug) =>
-      Boolean(await this.prisma.label.findUnique({ where: { slug }, select: { id: true } })),
+      Boolean(
+        await this.prisma.label.findUnique({
+          where: { slug },
+          select: { id: true },
+        }),
+      ),
     );
   }
 
   private uniqueArtistSlug(stageName: string): Promise<string> {
     return uniqueSlug(stageName, 'artist', async (slug) =>
-      Boolean(await this.prisma.artist.findUnique({ where: { slug }, select: { id: true } })),
+      Boolean(
+        await this.prisma.artist.findUnique({
+          where: { slug },
+          select: { id: true },
+        }),
+      ),
     );
   }
 }
