@@ -126,7 +126,7 @@ export function normaliseContributors(
       // `create`, which rejects any key that is not a column.
       .map((row, index) => ({
         name: row.name,
-        role: row.role ?? ('OTHER' as ContributorRole),
+        role: row.role ?? 'OTHER',
         roleNote: row.roleNote,
         position: index,
       }))

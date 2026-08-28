@@ -69,7 +69,10 @@ export class CatalogueAccess {
       }),
       this.prisma.label.findUnique({
         where: { ownerId: userId },
-        select: { id: true, artists: { select: { id: true, stageName: true } } },
+        select: {
+          id: true,
+          artists: { select: { id: true, stageName: true } },
+        },
       }),
       this.prisma.artistSeat.findMany({
         where: { userId, status: 'ACTIVE' },

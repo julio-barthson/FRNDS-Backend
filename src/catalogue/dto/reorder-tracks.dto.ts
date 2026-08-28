@@ -4,7 +4,7 @@ import { ArrayMaxSize, ArrayNotEmpty, IsArray, IsUUID } from 'class-validator';
 export class ReorderTracksDto {
   @ApiProperty({
     description:
-      "Every track id on the release, in the running order they should take. Partial lists are rejected — the client sends the order it is showing, which is unambiguous and needs no merge.",
+      'Every track id on the release, in the running order they should take. Partial lists are rejected — the client sends the order it is showing, which is unambiguous and needs no merge.',
     type: [String],
     example: [
       '5f4d1b2a-0000-4000-8000-000000000002',

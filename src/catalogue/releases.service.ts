@@ -10,6 +10,11 @@ import { NotificationsService } from '../notifications/notifications.service';
 import type { ReleaseType } from '../generated/prisma/enums';
 import { assertNoTypedFeature, normaliseContributors } from './billing';
 import { CatalogueAccess } from './catalogue.access';
+import {
+  describeIdentifierClash,
+  isrcForStorage,
+  upcForStorage,
+} from './identifiers';
 import { CreateReleaseDto, TrackInputDto } from './dto/create-release.dto';
 import { QueryReleasesDto } from './dto/query-releases.dto';
 import { SubmitReleaseDto } from './dto/submit-release.dto';
@@ -87,40 +92,49 @@ export class ReleasesService {
           },
         ];
 
-    const release = await this.prisma.release.create({
-      data: {
-        artistId: artist.id,
-        labelId: artist.labelId,
-        title: dto.title.trim(),
-        type,
-        releaseDate: dto.releaseDate ? new Date(dto.releaseDate) : null,
-        language: dto.language,
-        primaryGenre: dto.primaryGenre,
-        secondaryGenre: dto.secondaryGenre,
-        cLine: dto.cLine,
-        pLine: dto.pLine,
-        artworkAssetId: dto.artworkAssetId,
-        status: 'DRAFT',
-        contributors: { create: contributors },
-        tracks: {
-          create: dto.tracks.map((track, index) => ({
-            title: track.title.trim(),
-            versionTitle: track.versionTitle,
-            trackNumber: index + 1,
-            explicit: track.explicit ?? false,
-            lyrics: track.lyrics,
-            audioAssetId: track.audioAssetId,
-            status: track.audioAssetId ? 'PROCESSING' : 'PENDING_UPLOAD',
-            ...(track.contributors?.length && {
-              contributors: {
-                create: normaliseContributors(track.contributors),
-              },
-            }),
-          })),
+    // Checked before the write so a bad digit is one message about one field,
+    // rather than a constraint violation after a dozen rows already exist.
+    const upc = upcForStorage(dto.upc);
+    const trackIsrcs = dto.tracks.map((track) => isrcForStorage(track.isrc));
+
+    const release = await this.createOrClash(() =>
+      this.prisma.release.create({
+        data: {
+          artistId: artist.id,
+          labelId: artist.labelId,
+          upc,
+          title: dto.title.trim(),
+          type,
+          releaseDate: dto.releaseDate ? new Date(dto.releaseDate) : null,
+          language: dto.language,
+          primaryGenre: dto.primaryGenre,
+          secondaryGenre: dto.secondaryGenre,
+          cLine: dto.cLine,
+          pLine: dto.pLine,
+          artworkAssetId: dto.artworkAssetId,
+          status: 'DRAFT',
+          contributors: { create: contributors },
+          tracks: {
+            create: dto.tracks.map((track, index) => ({
+              title: track.title.trim(),
+              isrc: trackIsrcs[index],
+              versionTitle: track.versionTitle,
+              trackNumber: index + 1,
+              explicit: track.explicit ?? false,
+              lyrics: track.lyrics,
+              audioAssetId: track.audioAssetId,
+              status: track.audioAssetId ? 'PROCESSING' : 'PENDING_UPLOAD',
+              ...(track.contributors?.length && {
+                contributors: {
+                  create: normaliseContributors(track.contributors),
+                },
+              }),
+            })),
+          },
         },
-      },
-      include: releaseInclude,
-    });
+        include: releaseInclude,
+      }),
+    );
 
     // Probing happens in the background; the artist gets the draft back now
     // and the track flips to READY or FAILED within seconds.
@@ -221,46 +235,51 @@ export class ReleasesService {
       assertNoTypedFeature(dto.title, 'release title');
     }
 
-    const release = await this.prisma.release.update({
-      where: { id: releaseId },
-      data: {
-        ...(dto.title !== undefined && { title: dto.title.trim() }),
-        ...(dto.type !== undefined && { type: dto.type }),
-        ...(dto.releaseDate !== undefined && {
-          releaseDate: dto.releaseDate ? new Date(dto.releaseDate) : null,
-        }),
-        ...(dto.language !== undefined && { language: dto.language }),
-        ...(dto.primaryGenre !== undefined && {
-          primaryGenre: dto.primaryGenre,
-        }),
-        ...(dto.secondaryGenre !== undefined && {
-          secondaryGenre: dto.secondaryGenre,
-        }),
-        ...(dto.cLine !== undefined && { cLine: dto.cLine }),
-        ...(dto.pLine !== undefined && { pLine: dto.pLine }),
-        ...(dto.artworkAssetId !== undefined && {
-          artworkAssetId: dto.artworkAssetId,
-        }),
-        // Replaced wholesale, like track contributors: the app sends the list
-        // it is showing, which needs no diffing from a phone. An empty array
-        // is a real instruction — it clears the billing — so the check is on
-        // `undefined`, not on length.
-        ...(dto.contributors !== undefined && {
-          contributors: {
-            deleteMany: {},
-            ...(dto.contributors.length && {
-              create: normaliseContributors(dto.contributors),
-            }),
-          },
-        }),
-        // Editing a rejected release puts it back in the artist's hands.
-        ...(existing.status === 'REJECTED' && {
-          status: 'DRAFT' as const,
-          reviewNotes: null,
-        }),
-      },
-      include: releaseInclude,
-    });
+    const upc = upcForStorage(dto.upc);
+
+    const release = await this.createOrClash(() =>
+      this.prisma.release.update({
+        where: { id: releaseId },
+        data: {
+          ...(upc !== undefined && { upc }),
+          ...(dto.title !== undefined && { title: dto.title.trim() }),
+          ...(dto.type !== undefined && { type: dto.type }),
+          ...(dto.releaseDate !== undefined && {
+            releaseDate: dto.releaseDate ? new Date(dto.releaseDate) : null,
+          }),
+          ...(dto.language !== undefined && { language: dto.language }),
+          ...(dto.primaryGenre !== undefined && {
+            primaryGenre: dto.primaryGenre,
+          }),
+          ...(dto.secondaryGenre !== undefined && {
+            secondaryGenre: dto.secondaryGenre,
+          }),
+          ...(dto.cLine !== undefined && { cLine: dto.cLine }),
+          ...(dto.pLine !== undefined && { pLine: dto.pLine }),
+          ...(dto.artworkAssetId !== undefined && {
+            artworkAssetId: dto.artworkAssetId,
+          }),
+          // Replaced wholesale, like track contributors: the app sends the list
+          // it is showing, which needs no diffing from a phone. An empty array
+          // is a real instruction — it clears the billing — so the check is on
+          // `undefined`, not on length.
+          ...(dto.contributors !== undefined && {
+            contributors: {
+              deleteMany: {},
+              ...(dto.contributors.length && {
+                create: normaliseContributors(dto.contributors),
+              }),
+            },
+          }),
+          // Editing a rejected release puts it back in the artist's hands.
+          ...(existing.status === 'REJECTED' && {
+            status: 'DRAFT' as const,
+            reviewNotes: null,
+          }),
+        },
+        include: releaseInclude,
+      }),
+    );
 
     return toReleaseDetail(release, this.storage);
   }
@@ -335,6 +354,23 @@ export class ReleasesService {
     });
 
     return detail;
+  }
+
+  /**
+   * Runs a write that may collide on a unique identifier.
+   *
+   * `upc` and `isrc` are unique across the whole catalogue, so a duplicate
+   * surfaces as a raw P2002 naming a column the artist has never heard of.
+   * Anything that is not an identifier clash is rethrown untouched.
+   */
+  private async createOrClash<T>(write: () => Promise<T>): Promise<T> {
+    try {
+      return await write();
+    } catch (error) {
+      const clash = describeIdentifierClash(error);
+      if (clash) throw new BadRequestException(clash);
+      throw error;
+    }
   }
 
   /** Scoped to the caller's artist, so someone else's id reads as missing. */

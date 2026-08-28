@@ -51,6 +51,21 @@ export class TrackInputDto {
   @MaxLength(200)
   title: string;
 
+  /**
+   * The recording's ISRC, if it already has one. Format-checked and stored
+   * without separators; send an empty string to clear it.
+   *
+   * Supplied rather than issued: FRNDSHQ has no IFPI registrant code yet, and a
+   * recording released elsewhere already carries one — minting a second would
+   * split its royalties across two identifiers.
+   *
+   * @example "GBAYE0000001"
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  isrc?: string;
+
   /** @example "Radio Edit" */
   @IsOptional()
   @IsString()
@@ -92,6 +107,17 @@ export class CreateReleaseDto {
   @IsOptional()
   @IsUUID()
   artistId?: string;
+
+  /**
+   * The release barcode, if the artist already holds one. UPC-A, EAN-13 or
+   * ITF-14; the check digit is verified. Send an empty string to clear it.
+   *
+   * @example "036000291452"
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  upc?: string;
 
   @IsString()
   @MinLength(1)

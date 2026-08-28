@@ -245,8 +245,18 @@ describe('ReleasesService', () => {
       };
       // The blank row is dropped, and the gap it would have left is closed.
       expect(call.data.contributors.create).toEqual([
-        { name: 'Asake', role: 'PRIMARY_ARTIST', roleNote: undefined, position: 0 },
-        { name: 'Olamide', role: 'PRIMARY_ARTIST', roleNote: undefined, position: 1 },
+        {
+          name: 'Asake',
+          role: 'PRIMARY_ARTIST',
+          roleNote: undefined,
+          position: 0,
+        },
+        {
+          name: 'Olamide',
+          role: 'PRIMARY_ARTIST',
+          roleNote: undefined,
+          position: 1,
+        },
       ]);
     });
   });
@@ -258,7 +268,12 @@ describe('ReleasesService', () => {
         title: 'Sungba',
         contributors: [
           { id: 'rc-1', name: 'Asake', role: 'PRIMARY_ARTIST', position: 0 },
-          { id: 'rc-2', name: 'Burna Boy', role: 'FEATURED_ARTIST', position: 1 },
+          {
+            id: 'rc-2',
+            name: 'Burna Boy',
+            role: 'FEATURED_ARTIST',
+            position: 1,
+          },
         ],
         tracks: [
           { ...completeRelease.tracks[0], title: 'Sungba', contributors: [] },
@@ -285,8 +300,18 @@ describe('ReleasesService', () => {
             ...completeRelease.tracks[0],
             title: 'Track Two',
             contributors: [
-              { id: 'tc-1', name: 'Olamide', role: 'PRIMARY_ARTIST', position: 0 },
-              { id: 'tc-2', name: 'Fireboy', role: 'FEATURED_ARTIST', position: 1 },
+              {
+                id: 'tc-1',
+                name: 'Olamide',
+                role: 'PRIMARY_ARTIST',
+                position: 0,
+              },
+              {
+                id: 'tc-2',
+                name: 'Fireboy',
+                role: 'FEATURED_ARTIST',
+                position: 1,
+              },
             ],
           },
         ],
@@ -307,7 +332,12 @@ describe('ReleasesService', () => {
             title: 'Song',
             versionTitle: 'Chris Lake Remix',
             contributors: [
-              { id: 'tc-1', name: 'Wizkid', role: 'FEATURED_ARTIST', position: 0 },
+              {
+                id: 'tc-1',
+                name: 'Wizkid',
+                role: 'FEATURED_ARTIST',
+                position: 0,
+              },
             ],
           },
         ],

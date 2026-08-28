@@ -8,6 +8,7 @@ import { StorageService } from '../media/storage.service';
 import { AudioValidationService } from '../audio/audio-validation.service';
 import { assertNoTypedFeature, normaliseContributors } from './billing';
 import { CatalogueAccess } from './catalogue.access';
+import { describeIdentifierClash, isrcForStorage } from './identifiers';
 import { TrackInputDto } from './dto/create-release.dto';
 import { ReorderTracksDto } from './dto/reorder-tracks.dto';
 import { UpdateTrackDto } from './dto/update-track.dto';
@@ -40,22 +41,25 @@ export class TracksService {
     const nextNumber =
       Math.max(0, ...release.tracks.map((track) => track.trackNumber)) + 1;
 
-    const track = await this.prisma.track.create({
-      data: {
-        releaseId,
-        title: dto.title.trim(),
-        versionTitle: dto.versionTitle,
-        trackNumber: nextNumber,
-        explicit: dto.explicit ?? false,
-        lyrics: dto.lyrics,
-        audioAssetId: dto.audioAssetId,
-        status: dto.audioAssetId ? 'PROCESSING' : 'PENDING_UPLOAD',
-        ...(dto.contributors?.length && {
-          contributors: { create: normaliseContributors(dto.contributors) },
-        }),
-      },
-      select: { id: true },
-    });
+    const track = await this.writeOrClash(() =>
+      this.prisma.track.create({
+        data: {
+          releaseId,
+          isrc: isrcForStorage(dto.isrc),
+          title: dto.title.trim(),
+          versionTitle: dto.versionTitle,
+          trackNumber: nextNumber,
+          explicit: dto.explicit ?? false,
+          lyrics: dto.lyrics,
+          audioAssetId: dto.audioAssetId,
+          status: dto.audioAssetId ? 'PROCESSING' : 'PENDING_UPLOAD',
+          ...(dto.contributors?.length && {
+            contributors: { create: normaliseContributors(dto.contributors) },
+          }),
+        },
+        select: { id: true },
+      }),
+    );
 
     if (dto.audioAssetId) this.audio.enqueue(track.id);
 
@@ -85,43 +89,48 @@ export class TracksService {
       });
     }
 
-    await this.prisma.track.update({
-      where: { id: trackId },
-      data: {
-        ...(dto.title !== undefined && { title: dto.title.trim() }),
-        ...(dto.versionTitle !== undefined && {
-          versionTitle: dto.versionTitle,
-        }),
-        ...(dto.explicit !== undefined && { explicit: dto.explicit }),
-        ...(dto.lyrics !== undefined && { lyrics: dto.lyrics }),
-        ...(dto.audioAssetId !== undefined && {
-          audioAssetId: dto.audioAssetId,
-          // A new file clears whatever the previous one measured, and resets
-          // the attempt counter so the fresh upload gets its full retries.
-          status: dto.audioAssetId
-            ? ('PROCESSING' as const)
-            : ('PENDING_UPLOAD' as const),
-          processingError: null,
-          processingAttempts: 0,
-          durationSec: null,
-          sampleRate: null,
-          bitDepth: null,
-          channels: null,
-          lufs: null,
-          peakDb: null,
-        }),
-        // Contributors are replaced wholesale — the app sends the full list it
-        // is showing, which is simpler than diffing rows from a phone.
-        ...(dto.contributors !== undefined && {
-          contributors: {
-            deleteMany: {},
-            ...(dto.contributors.length && {
-              create: normaliseContributors(dto.contributors),
-            }),
-          },
-        }),
-      },
-    });
+    const isrc = isrcForStorage(dto.isrc);
+
+    await this.writeOrClash(() =>
+      this.prisma.track.update({
+        where: { id: trackId },
+        data: {
+          ...(dto.title !== undefined && { title: dto.title.trim() }),
+          ...(dto.versionTitle !== undefined && {
+            versionTitle: dto.versionTitle,
+          }),
+          ...(dto.explicit !== undefined && { explicit: dto.explicit }),
+          ...(isrc !== undefined && { isrc }),
+          ...(dto.lyrics !== undefined && { lyrics: dto.lyrics }),
+          ...(dto.audioAssetId !== undefined && {
+            audioAssetId: dto.audioAssetId,
+            // A new file clears whatever the previous one measured, and resets
+            // the attempt counter so the fresh upload gets its full retries.
+            status: dto.audioAssetId
+              ? ('PROCESSING' as const)
+              : ('PENDING_UPLOAD' as const),
+            processingError: null,
+            processingAttempts: 0,
+            durationSec: null,
+            sampleRate: null,
+            bitDepth: null,
+            channels: null,
+            lufs: null,
+            peakDb: null,
+          }),
+          // Contributors are replaced wholesale — the app sends the full list it
+          // is showing, which is simpler than diffing rows from a phone.
+          ...(dto.contributors !== undefined && {
+            contributors: {
+              deleteMany: {},
+              ...(dto.contributors.length && {
+                create: normaliseContributors(dto.contributors),
+              }),
+            },
+          }),
+        },
+      }),
+    );
 
     if (dto.audioAssetId) this.audio.enqueue(trackId);
 
@@ -208,6 +217,20 @@ export class TracksService {
     ]);
 
     return this.reload(releaseId);
+  }
+
+  /**
+   * An ISRC is unique across the catalogue, so a duplicate arrives as a raw
+   * P2002 naming a column the artist has never seen. Anything else rethrows.
+   */
+  private async writeOrClash<T>(write: () => Promise<T>): Promise<T> {
+    try {
+      return await write();
+    } catch (error) {
+      const clash = describeIdentifierClash(error);
+      if (clash) throw new BadRequestException(clash);
+      throw error;
+    }
   }
 
   private async findEditableRelease(userId: string, releaseId: string) {
