@@ -7,6 +7,7 @@ import {
 import * as bcrypt from 'bcryptjs';
 import { randomInt } from 'node:crypto';
 import { MailService } from '../mail/mail.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { seatInviteTemplate } from '../mail/templates';
 import { PrismaService } from '../prisma/prisma.service';
 import { notDeleted } from '../utils/prismaFilters';
@@ -36,6 +37,7 @@ export class SeatsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /** The artist must be on the caller's own roster. */
@@ -226,6 +228,27 @@ export class SeatsService {
         await this.prisma.user.update({
           where: { id: userId },
           data: { onboardingCompleted: true },
+        });
+      }
+
+      // The label sent this invitation and otherwise never learns it landed.
+      // Told directly rather than through `recipientsForArtist`: the seat
+      // holder who just accepted is in that set, and telling them they
+      // accepted their own invitation is noise.
+      const label = await this.prisma.artist.findUnique({
+        where: { id: seat.artistId },
+        select: {
+          stageName: true,
+          label: { select: { ownerId: true } },
+        },
+      });
+
+      if (label?.label?.ownerId) {
+        await this.notifications.notify({
+          userId: label.label.ownerId,
+          type: 'SEAT_ACCEPTED',
+          title: 'Invitation accepted',
+          body: `${user.email} now has access to ${label.stageName}.`,
         });
       }
 

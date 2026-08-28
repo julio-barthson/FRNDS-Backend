@@ -102,7 +102,17 @@ export class AccountsService {
               _count: { select: { releases: true } },
             },
           },
-          ownedLabel: { select: { id: true, name: true, slug: true } },
+          ownedLabel: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+              _count: { select: { artists: true } },
+              // Only the counts, to total the label's catalogue. Cheaper than a
+              // second groupBy for a page of twenty accounts.
+              artists: { select: { _count: { select: { releases: true } } } },
+            },
+          },
         },
       }),
     ]);
@@ -117,7 +127,16 @@ export class AccountsService {
           user.ownedLabel?.name ??
           ([user.firstName, user.lastName].filter(Boolean).join(' ') ||
             user.email),
-        releaseCount: user.artist?._count.releases ?? 0,
+        // A label's catalogue is its roster's. Reading `user.artist` alone
+        // showed every label as having nothing, the same way the detail page
+        // did before roster management existed.
+        releaseCount:
+          user.artist?._count.releases ??
+          (user.ownedLabel?.artists ?? []).reduce(
+            (sum, artist) => sum + artist._count.releases,
+            0,
+          ),
+        rosterCount: user.ownedLabel?._count.artists ?? 0,
       })),
       page,
       limit,
@@ -213,24 +232,24 @@ export class AccountsService {
     const releases =
       artistIds.length > 0
         ? await this.prisma.release.findMany({
-          where: { artistId: { in: artistIds } },
-          orderBy: { createdAt: 'desc' },
-          select: {
-            id: true,
-            title: true,
-            type: true,
-            status: true,
-            submittedAt: true,
-            reviewedAt: true,
-            createdAt: true,
-            artworkAsset: { select: { key: true, status: true } },
-            _count: { select: { tracks: true } },
-            // Which roster artist it belongs to. On an artist account this is
-            // always the same name; on a label's it is the column that makes
-            // the list readable.
-            artist: { select: { id: true, stageName: true } },
-          },
-        })
+            where: { artistId: { in: artistIds } },
+            orderBy: { createdAt: 'desc' },
+            select: {
+              id: true,
+              title: true,
+              type: true,
+              status: true,
+              submittedAt: true,
+              reviewedAt: true,
+              createdAt: true,
+              artworkAsset: { select: { key: true, status: true } },
+              _count: { select: { tracks: true } },
+              // Which roster artist it belongs to. On an artist account this is
+              // always the same name; on a label's it is the column that makes
+              // the list readable.
+              artist: { select: { id: true, stageName: true } },
+            },
+          })
         : [];
 
     return {

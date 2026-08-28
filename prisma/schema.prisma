@@ -646,4 +646,14 @@ enum NotificationType {
    * To every administrator, when something lands in the queue.
    */
   REVIEW_QUEUE_NEW
+  /**
+   * To whoever looks after the artist, when a track's audio fails its checks.
+   * Nothing told them before this: the track went to FAILED and waited to be
+   * noticed.
+   */
+  TRACK_AUDIO_FAILED
+  /**
+   * To the label, when someone accepts an invitation to one of its artists.
+   */
+  SEAT_ACCEPTED
 }

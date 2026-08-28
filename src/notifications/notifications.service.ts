@@ -42,6 +42,57 @@ export class NotificationsService {
     private readonly mail: MailService,
   ) {}
 
+  /**
+   * Everyone who should hear about something that happened to an artist.
+   *
+   * There was no answer to this before, and the absence showed: a release by a
+   * label's roster artist could be approved or rejected and `notifyOwner`
+   * simply returned, because `artist.user` was null. Nobody was told.
+   *
+   * - the artist's own login, when they have one
+   * - the label that owns them, otherwise nothing reaches a human at all
+   * - anyone holding a MANAGER seat, since they are the other people who can
+   *   act on it. VIEWERs are left out on purpose: they cannot fix a rejection,
+   *   and a notification they can do nothing about is noise.
+   */
+  async recipientsForArtist(artistId: string): Promise<string[]> {
+    const artist = await this.prisma.artist.findUnique({
+      where: { id: artistId },
+      select: {
+        userId: true,
+        label: { select: { ownerId: true } },
+        seats: {
+          where: { status: 'ACTIVE', role: 'MANAGER' },
+          select: { userId: true },
+        },
+      },
+    });
+
+    if (!artist) return [];
+
+    // A set: a label owner who also holds a seat on their own artist would
+    // otherwise be told twice.
+    const recipients = new Set<string>();
+    if (artist.userId) recipients.add(artist.userId);
+    if (artist.label?.ownerId) recipients.add(artist.label.ownerId);
+    for (const seat of artist.seats) {
+      if (seat.userId) recipients.add(seat.userId);
+    }
+
+    return [...recipients];
+  }
+
+  /** Sequential rather than parallel: `notify` swallows its own errors, so one
+   *  bad recipient must not take the rest down with it. */
+  async notifyEach(
+    userIds: string[],
+    args: Omit<NotifyArgs, 'userId'>,
+  ): Promise<void> {
+    for (const userId of userIds) {
+      await this.notify({ ...args, userId });
+    }
+  }
+
   async notify(args: NotifyArgs): Promise<void> {
     try {
       await this.prisma.notification.create({

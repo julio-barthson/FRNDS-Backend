@@ -333,7 +333,8 @@ ${dto.notes.trim()}`,
    *
    * The owner is looked up rather than passed in, because the caller has the
    * reviewer's id, not the artist's — and a release made by a label's roster
-   * artist may have no login at all, which is why `user` is optional here.
+   * artist has no login at all, so the recipients are resolved rather than
+   * read off the artist row.
    */
   private async notifyOwner(
     releaseId: string,
@@ -345,17 +346,19 @@ ${dto.notes.trim()}`,
   ) {
     const release = await this.prisma.release.findUnique({
       where: { id: releaseId },
-      select: {
-        title: true,
-        artist: { select: { user: { select: { id: true } } } },
-      },
+      select: { title: true, artistId: true },
     });
 
-    const userId = release?.artist.user?.id;
-    if (!release || !userId) return;
+    if (!release) return;
 
-    await this.notifications.notify({
-      userId,
+    // Was `artist.user?.id`, with a bare `return` when it was null — so a
+    // label's release could be approved or rejected and nobody heard. The
+    // resolver answers for a roster artist too.
+    const recipients = await this.notifications.recipientsForArtist(
+      release.artistId,
+    );
+
+    await this.notifications.notifyEach(recipients, {
       type: message.type,
       title: message.title,
       body: message.body(release.title),

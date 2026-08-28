@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MailModule } from '../mail/mail.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { MediaModule } from '../media/media.module';
 import { OverviewController } from './overview.controller';
 import { OverviewService } from './overview.service';
@@ -17,7 +18,7 @@ import { SeatsService } from './seats.service';
  * way the catalogue list does.
  */
 @Module({
-  imports: [MediaModule, MailModule],
+  imports: [MediaModule, MailModule, NotificationsModule],
   controllers: [
     RosterController,
     OverviewController,

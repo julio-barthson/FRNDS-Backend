@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../media/storage.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   AUDIO_RULES,
   MAX_PROCESSING_ATTEMPTS,
@@ -24,6 +25,7 @@ export class AudioValidationService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly probe: AudioProbeService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /**
@@ -165,8 +167,15 @@ export class AudioValidationService {
     }
   }
 
+  /**
+   * Marks the track failed and tells whoever looks after the artist.
+   *
+   * This is terminal — a FAILED track is not retried until a new file is
+   * attached, which resets it to PROCESSING — so there is no risk of notifying
+   * once per attempt.
+   */
   private async fail(trackId: string, reason: string, result?: ProbeResult) {
-    await this.prisma.track.update({
+    const track = await this.prisma.track.update({
       where: { id: trackId },
       data: {
         status: 'FAILED',
@@ -181,6 +190,24 @@ export class AudioValidationService {
           channels: result.channels,
         }),
       },
+      select: {
+        title: true,
+        release: { select: { id: true, title: true, artistId: true } },
+      },
+    });
+
+    const recipients = await this.notifications.recipientsForArtist(
+      track.release.artistId,
+    );
+
+    await this.notifications.notifyEach(recipients, {
+      type: 'TRACK_AUDIO_FAILED',
+      title: 'A track needs a new file',
+      // The reason is the probe's own words, which name the actual problem —
+      // a sample rate, a channel count. Generic copy here would send someone
+      // back to the app to find out what this sentence already knows.
+      body: `“${track.title}” on “${track.release.title}” did not pass its audio checks. ${reason}`,
+      releaseId: track.release.id,
     });
   }
 }

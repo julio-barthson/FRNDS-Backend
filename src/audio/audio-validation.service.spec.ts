@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../media/storage.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { AudioProbeService, UnreadableAudioError } from './audio-probe.service';
 import {
   AudioValidationService,
@@ -67,6 +68,10 @@ describe('AudioValidationService', () => {
   let prisma: { track: { findUnique: jest.Mock; update: jest.Mock } };
   let storage: { isConfigured: boolean; presignGet: jest.Mock };
   let probe: { probe: jest.Mock };
+  let notifications: {
+    recipientsForArtist: jest.Mock;
+    notifyEach: jest.Mock;
+  };
 
   const trackWithAudio = {
     id: 'track-1',
@@ -83,7 +88,25 @@ describe('AudioValidationService', () => {
   };
 
   beforeEach(async () => {
-    prisma = { track: { findUnique: jest.fn(), update: jest.fn() } };
+    prisma = {
+      track: {
+        findUnique: jest.fn(),
+        // `fail` reads the updated row back to work out who to tell, so the
+        // mock has to answer with the release it belongs to.
+        update: jest.fn().mockResolvedValue({
+          title: 'Test Track',
+          release: {
+            id: 'release-1',
+            title: 'Test Single',
+            artistId: 'artist-1',
+          },
+        }),
+      },
+    };
+    notifications = {
+      recipientsForArtist: jest.fn().mockResolvedValue(['user-1']),
+      notifyEach: jest.fn(),
+    };
     storage = {
       isConfigured: true,
       presignGet: jest.fn().mockResolvedValue('https://storage/get'),
@@ -96,6 +119,7 @@ describe('AudioValidationService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: StorageService, useValue: storage },
         { provide: AudioProbeService, useValue: probe },
+        { provide: NotificationsService, useValue: notifications },
       ],
     }).compile();
 

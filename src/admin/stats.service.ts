@@ -27,9 +27,7 @@ export class StatsService {
    * before they decide what to work on.
    */
   async overview() {
-    const overdueBefore = new Date(
-      Date.now() - OVERDUE_HOURS * 60 * 60 * 1000,
-    );
+    const overdueBefore = new Date(Date.now() - OVERDUE_HOURS * 60 * 60 * 1000);
 
     const [
       waiting,
