@@ -8,6 +8,11 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
+import {
+  ARTIST_NAME_MAX,
+  ARTIST_NAME_MIN,
+  LEGAL_NAME_MAX,
+} from '../../utils/metadata-limits';
 
 /**
  * Covers both halves of the profile in one call: the account fields on User
@@ -41,13 +46,13 @@ export class UpdateProfileDto {
   // ── Artist profile ───────────────────────────────────────────────────────
   @IsOptional()
   @IsString()
-  @MinLength(2)
-  @MaxLength(100)
+  @MinLength(ARTIST_NAME_MIN)
+  @MaxLength(ARTIST_NAME_MAX)
   stageName?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(150)
+  @MaxLength(LEGAL_NAME_MAX)
   legalName?: string;
 
   @IsOptional()

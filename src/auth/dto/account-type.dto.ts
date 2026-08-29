@@ -1,4 +1,11 @@
-import { IsIn, IsNotEmpty, IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsIn,
+  IsNotEmpty,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
+import { ARTIST_NAME_MAX } from '../../utils/metadata-limits';
 
 export type AccountType = 'ARTIST' | 'LABEL';
 
@@ -22,6 +29,11 @@ export class AccountTypeDto {
   @IsString()
   @IsNotEmpty()
   @MinLength(2, { message: 'Name must be at least 2 characters' })
-  @MaxLength(100, { message: 'Name must not exceed 100 characters' })
+  // Capped with the artist limit even though a label's imprint name also
+  // comes through here: 64 is generous for a label name, and one number is
+  // better than a second one guessed from nothing.
+  @MaxLength(ARTIST_NAME_MAX, {
+    message: `Name must not exceed ${ARTIST_NAME_MAX} characters`,
+  })
   name: string;
 }

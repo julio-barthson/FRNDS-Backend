@@ -6,6 +6,11 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
+import {
+  ARTIST_NAME_MAX,
+  ARTIST_NAME_MIN,
+  LEGAL_NAME_MAX,
+} from '../../utils/metadata-limits';
 
 /**
  * A roster artist is a metadata identity the label owns, not a login — which
@@ -15,14 +20,14 @@ import {
 export class CreateRosterArtistDto {
   /** The name that appears on the release. */
   @IsString()
-  @MinLength(1)
-  @MaxLength(120)
+  @MinLength(ARTIST_NAME_MIN)
+  @MaxLength(ARTIST_NAME_MAX)
   stageName: string;
 
   /** For contracts and royalty paperwork; never shown publicly. */
   @IsOptional()
   @IsString()
-  @MaxLength(200)
+  @MaxLength(LEGAL_NAME_MAX)
   legalName?: string;
 
   @IsOptional()
@@ -71,13 +76,13 @@ export class CreateRosterArtistDto {
 export class UpdateRosterArtistDto {
   @IsOptional()
   @IsString()
-  @MinLength(1)
-  @MaxLength(120)
+  @MinLength(ARTIST_NAME_MIN)
+  @MaxLength(ARTIST_NAME_MAX)
   stageName?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(200)
+  @MaxLength(LEGAL_NAME_MAX)
   legalName?: string;
 
   @IsOptional()
